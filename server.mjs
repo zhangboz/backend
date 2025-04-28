@@ -161,12 +161,14 @@ app.use((err, req, res, next) => {
 
 // --- Start Server ---
 app.listen(port, () => {
-    console.log(`后端服务器运行在 http://localhost:${port}`);
-    console.log(`Uploads temporary directory: ${uploadDir}`);
-    if (!process.env.WX_APP_ID || !process.env.WX_APP_SECRET) {
-       console.warn("警告: WX_APP_ID 或 WX_APP_SECRET 未在 .env 文件中配置. 微信登录将失败.");
-    }
-     if (!process.env.GEMINI_API_KEY) {
-       console.warn("警告: GEMINI_API_KEY 未在 .env 文件中配置. AI 功能将不可用.");
-    }
+  // More generic message suitable for local and deployed environments
+  console.log(`Backend server started and listening on port ${port}`);
+  console.log(`Uploads temporary directory: ${uploadDir}`);
+  // Keep your warnings, they are useful!
+  if (!process.env.WX_APP_ID || !process.env.WX_APP_SECRET) {
+     console.warn("警告: WX_APP_ID 或 WX_APP_SECRET 未配置. 微信登录将失败.");
+  }
+   if (!process.env.GEMINI_API_KEY) {
+     console.warn("警告: GEMINI_API_KEY 未配置. AI 功能将不可用.");
+  }
 });

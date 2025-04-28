@@ -19,7 +19,7 @@ async function imageUnderstand(filePath, mimeType) {
     model: "gemini-2.5-pro-exp-03-25",
     contents: createUserContent([
       createPartFromUri(myfile.uri, myfile.mimeType),
-      "What is this image about? Use a few words to describe it.",
+      "这个图片在说什么？简单介绍一下这个图片的内容。如果是一道题目，给出答案和分析。如果图片里有太多信息，如超过三道题，可以回复“题目太多，请分开提问”。",
     ]),
   });
   return response.text;
