@@ -16,7 +16,7 @@ async function imageUnderstand(filePath, mimeType) {
   });
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash-preview-04-17",
+    model: "gemini-2.0-flash",
     //model: "gemini-2.5-pro-exp-03-25",
     contents: createUserContent([
       createPartFromUri(myfile.uri, myfile.mimeType),

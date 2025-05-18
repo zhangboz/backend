@@ -32,20 +32,23 @@ const storage = multer.diskStorage({
     cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(safeOriginalName));
   }
 });
+const customFileFilter = (req, file, cb) => {
+  const isImage = file.mimetype.startsWith('image/');
+  const isPdf = file.mimetype === 'application/pdf';
 
-const imageFileFilter = (req, file, cb) => {
-  if (file.mimetype.startsWith('image/')) {
+  if (isImage || isPdf) {
     console.log(`[Multer] Accepting file: ${file.originalname} (${file.mimetype})`);
     cb(null, true);
   } else {
-    console.log(`[Multer] Rejecting file: ${file.originalname} (${file.mimetype}) - Not an image`);
-    cb(new Error('仅支持上传图片文件!'), false);
+    console.log(`[Multer] Rejecting file: ${file.originalname} (${file.mimetype}) - Not an image or PDF`);
+    cb(new Error('仅支持上传图片或 PDF 文件!'), false); // Update error message
   }
 };
 
+
 const upload = multer({
-    storage: storage,
-    fileFilter: imageFileFilter,
+    storage: storage, // contains the destination and filename functions
+    fileFilter: customFileFilter, // filter rules
     limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
 
