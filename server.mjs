@@ -5,23 +5,31 @@ import cors from 'cors';
 import axios from 'axios';
 import multer from 'multer';
 import path from 'node:path';
-import fs from 'fs-extra';
+import fs from 'fs-extra'; // Using fs-extra for ensureDirSync
 import { fileURLToPath } from 'node:url';
 import fsPromises from 'node:fs/promises'; // Import fsPromises for unlink
 
 // --- Import from GoogleAI module ---
-import {imageUnderstand } from './AI_ChatBot/GoogleAI.mjs'; // <-- update import
+import { imageUnderstand } from './AI_ChatBot/GoogleAI.mjs';
+
+// --- Import from FileProcessor module ---
+import { exportMarkdown, scheduleFileDeletion } from './FileProcessor/fileExport.mjs'; // <-- NEW IMPORT
 
 // --- Calculate __dirname equivalent in ESM ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// --- Ensure upload directory exists ---
+// --- Ensure upload and temp_exports directories exist ---
 const uploadDir = path.join(__dirname, 'uploads');
 fs.ensureDirSync(uploadDir);
 console.log(`[Server] Upload directory ensured at: ${uploadDir}`);
 
-// --- Multer Configuration (Keep as before) ---
+const tempExportDir = path.join(__dirname, 'temp_exports'); // Directory for Pandoc outputs
+fs.ensureDirSync(tempExportDir);
+console.log(`[Server] Temporary export directory ensured at: ${tempExportDir}`);
+
+
+// --- Multer Configuration ---
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, uploadDir);
@@ -41,14 +49,12 @@ const customFileFilter = (req, file, cb) => {
     cb(null, true);
   } else {
     console.log(`[Multer] Rejecting file: ${file.originalname} (${file.mimetype}) - Not an image or PDF`);
-    cb(new Error('仅支持上传图片或 PDF 文件!'), false); // Update error message
+    cb(new Error('仅支持上传图片或 PDF 文件!'), false);
   }
 };
-
-
 const upload = multer({
-    storage: storage, // contains the destination and filename functions
-    fileFilter: customFileFilter, // filter rules
+    storage: storage,
+    fileFilter: customFileFilter,
     limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
 
@@ -58,13 +64,15 @@ const port = process.env.PORT || 3000;
 
 // --- Middleware ---
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '5mb' })); // Allow larger JSON payloads for markdown
+app.use(express.urlencoded({ extended: true, limit: '5mb' })); // For form data if needed
+
+// Serve temporary exported files statically for download links
+app.use('/api/exports', express.static(tempExportDir)); // <-- NEW: Serve temp files
 
 
 
-// --- Routes ---
-
-// Login Route (Keep as is)
+// Login Route
 app.post('/api/login', async (req, res) => {
     const { code } = req.body;
     const appId = process.env.WX_APP_ID;
@@ -90,7 +98,7 @@ app.post('/api/login', async (req, res) => {
             return res.status(400).json({ success: false, message: `微信登录失败: ${wechatData.errmsg}`, errcode: wechatData.errcode });
         }
 
-        const { openid, session_key } = wechatData;
+        const { openid, session_key } = wechatData; // session_key might be useful later
         console.log(`成功获取 openid: ${openid}`);
         res.json({ success: true, message: '登录成功', openid: openid });
 
@@ -100,11 +108,7 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// --- REMOVE Simple Upload Route ---
-// app.post('/api/upload-image', upload.single('homeworkImage'), (req, res, next) => { ... });
-
-
-// --- Combined Upload and Process Route ---
+// Combined Upload and Process Route
 app.post('/api/process-homework', upload.single('homeworkImage'), async (req, res) => {
     console.log('[Route /api/process-homework] Received request.');
 
@@ -118,24 +122,66 @@ app.post('/api/process-homework', upload.single('homeworkImage'), async (req, re
     console.log(`[Route /api/process-homework] File uploaded: ${uploadedFilePath}, MimeType: ${mimeType}`);
 
     try {
-        // Call Gemini image analysis
         const resultText = await imageUnderstand(uploadedFilePath, mimeType);
-        // Optionally delete the file after processing
         await fsPromises.unlink(uploadedFilePath);
-        res.json({ success: true, reply: resultText }); // <-- change 'result' to 'reply'
+        console.log(`[Route /api/process-homework] Deleted uploaded file: ${uploadedFilePath}`);
+        res.json({ success: true, reply: resultText });
     } catch (err) {
         console.error('[Gemini] Error analyzing image:', err);
-        // Optionally delete the file on error
-        try { await fsPromises.unlink(uploadedFilePath); } catch {}
+        try {
+            await fsPromises.unlink(uploadedFilePath);
+            console.log(`[Route /api/process-homework] Deleted uploaded file after error: ${uploadedFilePath}`);
+        } catch (unlinkErr) {
+            console.error(`[Route /api/process-homework] Failed to delete file after error: ${uploadedFilePath}`, unlinkErr);
+        }
         res.status(500).json({ success: false, message: 'AI 分析图片时出错', error: err.message });
+    }
+});
+
+// --- NEW Markdown Export Route ---
+app.post('/api/export/:format', async (req, res) => {
+    const { format } = req.params;
+    const { markdownText } = req.body;
+
+    console.log(`[Route /api/export/${format}] Received request.`);
+
+    if (!markdownText) {
+        return res.status(400).json({ success: false, message: 'Markdown text is required in the request body.' });
+    }
+
+    const supportedFormats = ['docx', 'pdf']; // Define explicitly what you support via this route
+    if (!supportedFormats.includes(format.toLowerCase())) {
+        return res.status(400).json({ success: false, message: `Unsupported export format: ${format}. Supported: ${supportedFormats.join(', ')}` });
+    }
+
+    try {
+        const outputFilePath = await exportMarkdown(markdownText, format.toLowerCase());
+        const outputFileName = path.basename(outputFilePath);
+
+        console.log(`[Route /api/export/${format}] File generated: ${outputFilePath}`);
+
+        // Provide a Download Link (more robust, allows for temp file management)
+        const downloadLink = `${req.protocol}://${req.get('host')}/api/exports/${outputFileName}`;
+        res.json({
+            success: true,
+            message: `File ready for download. It will be available for approximately 5 minutes.`,
+            downloadUrl: downloadLink,
+            fileName: outputFileName // Client might want this for the <a download="..."> attribute
+        });
+
+        // Schedule deletion of the temporary file
+        scheduleFileDeletion(outputFilePath, 5 * 60 * 1000); // 5 minutes
+
+    } catch (error) {
+        console.error(`[Route /api/export/${format}] Error during export:`, error.message, error.stack);
+        res.status(500).json({ success: false, message: `Error exporting to ${format}: ${error.message}` });
     }
 });
 
 
 // --- Global Error Handler (Place AFTER routes) ---
-// Handles errors specifically from Multer or other middleware *before* the route handler
 app.use((err, req, res, next) => {
-    console.error("[Global Error Handler] Caught an error:", err);
+    console.error("[Global Error Handler] Caught an error:", err.message, err.stack);
 
     if (err instanceof multer.MulterError) {
       console.error("Multer error details:", err);
@@ -147,11 +193,15 @@ app.use((err, req, res, next) => {
       }
       // Return response directly from error handler
       return res.status(400).json({ success: false, message: message });
-    } else if (err && err.message === '仅支持上传图片文件!') {
+    } else if (err && err.message === '仅支持上传图片或 PDF 文件!') { // More specific check
        console.error("File type error:", err.message);
        // Return response directly from error handler
        return res.status(400).json({ success: false, message: err.message });
-    } else if (err) {
+    } else if (res.headersSent) { // Important check
+        console.log("[Global Error Handler] Headers already sent, delegating to default Express error handler.");
+        return next(err);
+    }
+    else if (err) {
        console.error("Generic server error:", err);
        // Return response directly from error handler
        return res.status(500).json({ success: false, message: `服务器内部错误: ${err.message || '未知错误'}` });
@@ -161,13 +211,11 @@ app.use((err, req, res, next) => {
     next(err);
 });
 
-
 // --- Start Server ---
 app.listen(port, () => {
-  // More generic message suitable for local and deployed environments
   console.log(`Backend server started and listening on port ${port}`);
   console.log(`Uploads temporary directory: ${uploadDir}`);
-  // Keep your warnings, they are useful!
+  console.log(`Exports temporary directory served at /api/exports from: ${tempExportDir}`);
   if (!process.env.WX_APP_ID || !process.env.WX_APP_SECRET) {
      console.warn("警告: WX_APP_ID 或 WX_APP_SECRET 未配置. 微信登录将失败.");
   }
