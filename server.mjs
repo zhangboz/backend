@@ -67,9 +67,21 @@ app.use(cors());
 app.use(express.json({ limit: '5mb' })); // Allow larger JSON payloads for markdown
 app.use(express.urlencoded({ extended: true, limit: '5mb' })); // For form data if needed
 
-// Serve temporary exported files statically for download links
-app.use('/api/exports', express.static(tempExportDir)); // <-- NEW: Serve temp files
+// --- NEW: Middleware to force Content-Disposition: attachment for files in /api/exports ---
+app.use('/api/exports', (req, res, next) => {
+    // Get the filename from the URL, e.g., /api/exports/my-document.docx -> my-document.docx
+    // Split to remove query parameters if any (though not expected here)
+    const filename = path.basename(req.url.split('?')[0]);
+    
+    // Set the Content-Disposition header to 'attachment' to force download
+    // express.static will automatically handle the Content-Type based on the file extension
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    
+    next(); // Pass control to the next middleware (express.static)
+});
 
+// Serve temporary exported files statically for download links
+app.use('/api/exports', express.static(tempExportDir));
 
 
 // Login Route
