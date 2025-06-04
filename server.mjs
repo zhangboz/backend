@@ -60,7 +60,7 @@ const upload = multer({
 
 // --- Express App Setup ---
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 5000;
 
 // --- Middleware ---
 app.use(cors());
@@ -177,7 +177,10 @@ app.post('/api/export/:format', async (req, res) => {
         res.status(500).json({ success: false, message: `Error exporting to ${format}: ${error.message}` });
     }
 });
-
+// app.use(express.static(path.join(__dirname, 'public_react_build')));
+// app.get('*', (req, res) => {
+//     res.sendFile(path.join(__dirname, 'public_react_build', 'index.html'));
+// });
 
 // --- Global Error Handler (Place AFTER routes) ---
 app.use((err, req, res, next) => {

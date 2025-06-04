@@ -36,7 +36,7 @@ RUN npm install --omit=dev
 COPY . .
 
 # Expose the port your app runs on
-EXPOSE 3000
+EXPOSE 5000
 
 # Define the command to run your application
 # Adjust if your entry point is different or in a subdirectory
