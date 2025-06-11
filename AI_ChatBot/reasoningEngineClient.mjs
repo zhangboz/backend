@@ -1,4 +1,4 @@
-// reasoningEngineClient.mjs
+// ./AI_ChatBot/reasoningEngineClient.mjs
 import axios from 'axios';
 import { GoogleAuth } from 'google-auth-library';
 
@@ -10,7 +10,6 @@ let accessTokenCache = { token: null, expiry: 0 };
 
 async function getAuthInstance() {
     if (!authInstance) {
-        // Keep this log as it's a one-time initialization message.
         console.log("REASONING_ENGINE_CLIENT: Initializing GoogleAuth instance...");
         authInstance = new GoogleAuth({
             scopes: GOOGLE_AUTH_SCOPES
@@ -22,15 +21,12 @@ async function getAuthInstance() {
 async function getAccessTokenInternal() {
     const now = Date.now();
     if (accessTokenCache.token && accessTokenCache.expiry > now + 60 * 1000) {
-        // console.log("REASONING_ENGINE_CLIENT: Using cached access token."); // Cleaned
         return accessTokenCache.token;
     }
 
-    // console.log("REASONING_ENGINE_CLIENT: Fetching new access token..."); // Cleaned
     const auth = await getAuthInstance();
     const client = await auth.getClient();
     if (!client) {
-        // Errors are critical, keep them.
         console.error("REASONING_ENGINE_CLIENT_ERROR: Failed to get client from GoogleAuth object.");
         throw new Error("REASONING_ENGINE_CLIENT: Failed to get client from GoogleAuth object.");
     }
@@ -40,186 +36,137 @@ async function getAccessTokenInternal() {
         throw new Error("REASONING_ENGINE_CLIENT: Failed to get access token from client.");
     }
     
+    let expiresInSeconds = 3540; // Default
+    if (accessTokenResponse.res && accessTokenResponse.res.data && typeof accessTokenResponse.res.data.expires_in === 'number') {
+        expiresInSeconds = accessTokenResponse.res.data.expires_in;
+    }
+    
     accessTokenCache = {
         token: accessTokenResponse.token,
-        expiry: now + (accessTokenResponse.res.data.expires_in || 3540) * 1000
+        expiry: now + expiresInSeconds * 1000
     };
-    // console.log("REASONING_ENGINE_CLIENT: New access token fetched and cached."); // Cleaned
     return accessTokenCache.token;
 }
 
+// Helper for detailed error logging
+async function logDetailedError(context, error, additionalInfo = {}) {
+    console.error(`\n--- REASONING_ENGINE_CLIENT_ERROR: CAUGHT ERROR in ${context} ---`);
+    console.error(`Additional Info: ${JSON.stringify(additionalInfo)}`);
+    console.error('Error Message:', error.message);
+    console.error('Error Name:', error.name);
+    // console.error('Error Stack:', error.stack); // Can be very verbose, uncomment if needed
+    console.error('Full error object (stringified):', 
+        JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
+
+    if (error.response) {
+        console.error('error.response IS PRESENT.');
+        console.error('Status:', error.response.status);
+        if (error.response.data) {
+            console.error('error.response.data IS PRESENT.');
+            if (typeof error.response.data.on === 'function') { // Check if it's a stream
+                let errorStreamData = '';
+                console.error('error.response.data is a STREAM. Reading content:');
+                try {
+                    // Consuming a stream in Node.js:
+                    const chunks = [];
+                    for await (const chunk of error.response.data) {
+                        chunks.push(Buffer.from(chunk));
+                    }
+                    errorStreamData = Buffer.concat(chunks).toString('utf-8');
+                    console.error('Streamed error data content:', errorStreamData);
+                } catch (streamReadError) {
+                    console.error('Failed to read error data stream:', streamReadError.message);
+                }
+            } else {
+                 console.error('Data (non-stream):', JSON.stringify(error.response.data, null, 2));
+            }
+        } else {
+             console.error('error.response.data is NOT PRESENT (null, undefined, etc.).');
+        }
+    } else {
+        console.error('error.response is NOT PRESENT (undefined). This is a likely source of "cannot read .data" if code assumes it exists.');
+    }
+    console.error(`--- END REASONING_ENGINE_CLIENT_ERROR for ${context} ---\n`);
+}
+
+
 // --- 1. Create a new session ---
 export async function createAgentSession(projectId, location, agentId, userId) {
-    // console.log(`REASONING_ENGINE_CLIENT: Attempting to create session for user_id: ${userId}, agent_id: ${agentId}...`); // Cleaned
+    console.log(`REASONING_ENGINE_CLIENT: Attempting to create session for user_id: ${userId}, agent_id: ${agentId}...`);
     const accessToken = await getAccessTokenInternal();
     const url = `https://${location}-aiplatform.googleapis.com/${API_VERSION}/projects/${projectId}/locations/${location}/reasoningEngines/${agentId}:query`;
-
-    const requestBody = {
-        class_method: "create_session",
-        input: {
-            user_id: userId
-        }
-    };
-
-    // console.log(`REASONING_ENGINE_CLIENT: Sending request to create session: ${url}`); // Cleaned
-    // console.log("REASONING_ENGINE_CLIENT: Create session request body:", JSON.stringify(requestBody)); // Cleaned for production
+    const requestBody = { class_method: "create_session", input: { user_id: userId } };
 
     try {
         const response = await axios.post(url, requestBody, {
-            headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
-            }
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
         });
-
-        // console.log("REASONING_ENGINE_CLIENT: Create session raw response data:", JSON.stringify(response.data, null, 2)); // Cleaned for production
-
         let sessionId;
         if (response.data && response.data.output && typeof response.data.output === 'object' && response.data.output.id) {
             sessionId = response.data.output.id;
         } else if (response.data && response.data.id) {
             sessionId = response.data.id;
         } else {
-            console.error(`REASONING_ENGINE_CLIENT_ERROR: Failed to extract session ID from create_session response for user_id: ${userId}, agent_id: ${agentId}.`);
-            console.error("REASONING_ENGINE_CLIENT_ERROR: Full create_session response:", JSON.stringify(response.data, null, 2)); // Keep for error diagnosis
+            console.error(`REASONING_ENGINE_CLIENT_ERROR: Failed to extract session ID from create_session. Full response:`, JSON.stringify(response.data, null, 2));
             throw new Error("REASONING_ENGINE_CLIENT: Failed to extract session ID from create_session response.");
         }
-        
-        // console.log(`REASONING_ENGINE_CLIENT: Session created successfully. Session ID: ${sessionId} for user_id: ${userId}`); // Cleaned
+        console.log(`REASONING_ENGINE_CLIENT: Session created successfully. Session ID: ${sessionId} for user_id: ${userId}`);
         return sessionId;
-
     } catch (error) {
-        console.error(`REASONING_ENGINE_CLIENT_ERROR: Error creating agent session for user_id: ${userId}, agent_id: ${agentId}:`);
-        if (error.response) {
-            console.error('REASONING_ENGINE_CLIENT_ERROR: Status:', error.response.status);
-            console.error('REASONING_ENGINE_CLIENT_ERROR: Data:', JSON.stringify(error.response.data, null, 2));
-        } else {
-            console.error('REASONING_ENGINE_CLIENT_ERROR: Message:', error.message);
-        }
-        throw error; // Re-throw for the calling function to handle
+        await logDetailedError('createAgentSession', error, { projectId, location, agentId, userId });
+        throw error;
     }
 }
 
 // --- 2. Stream the response with a message ---
 export async function streamAgentQuery(projectId, location, agentId, userId, sessionId, message) {
-    // console.log(`REASONING_ENGINE_CLIENT: Attempting to stream query for session_id: ${sessionId}, user_id: ${userId}...`); // Cleaned
+    console.log(`REASONING_ENGINE_CLIENT: Attempting to stream query for session_id: ${sessionId}, user_id: ${userId}...`);
     const accessToken = await getAccessTokenInternal();
     const url = `https://${location}-aiplatform.googleapis.com/${API_VERSION}/projects/${projectId}/locations/${location}/reasoningEngines/${agentId}:streamQuery?alt=sse`;
-
-    const requestBody = {
-        class_method: "stream_query",
-        input: {
-            user_id: userId,
-            session_id: sessionId,
-            message: message
-        }
-    };
-
-    // console.log(`REASONING_ENGINE_CLIENT: Sending request to stream query: ${url}`); // Cleaned
-    // console.log("REASONING_ENGINE_CLIENT: Stream query request body:", JSON.stringify(requestBody)); // Cleaned for production (can be very large with images)
+    const requestBody = { class_method: "stream_query", input: { user_id: userId, session_id: sessionId, message: message } };
 
     try {
         const response = await axios.post(url, requestBody, {
-            headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
             responseType: 'stream'
         });
-
-        // console.log('REASONING_ENGINE_CLIENT: Stream query response (streaming started)...'); // Cleaned
         let fullResponseData = '';
-
-        response.data.on('data', (chunk) => {
-            const chunkString = chunk.toString();
-            // process.stdout.write(chunkString); // Removed: Calling script (GoogleAI_Agent.mjs) will handle final output display
-            fullResponseData += chunkString;
-        });
-
+        response.data.on('data', (chunk) => fullResponseData += chunk.toString());
         return new Promise((resolve, reject) => {
             response.data.on('end', () => {
-                // console.log('\nREASONING_ENGINE_CLIENT: Stream ended.'); // Cleaned
+                console.log('REASONING_ENGINE_CLIENT: Stream ended for query.');
                 resolve(fullResponseData);
             });
-            response.data.on('error', (streamError) => { // Renamed 'err' to 'streamError' for clarity
-                console.error(`REASONING_ENGINE_CLIENT_ERROR: Stream error during query for session_id: ${sessionId}, user_id: ${userId}:`, streamError.message);
-                reject(streamError);
+            response.data.on('error', (streamError) => {
+                logDetailedError('streamAgentQuery - stream.on(error)', streamError, { projectId, location, agentId, userId, sessionId })
+                    .finally(() => reject(streamError)); // Ensure log completes before reject
             });
         });
     } catch (error) {
-        console.error(`REASONING_ENGINE_CLIENT_ERROR: Error in streamAgentQuery setup or initial request for session_id: ${sessionId}, user_id: ${userId}:`);
-        if (error.response) {
-            console.error('REASONING_ENGINE_CLIENT_ERROR: Status:', error.response.status);
-            // Error response for a stream might also be a stream or JSON
-            if (error.response.data && typeof error.response.data.on === 'function') {
-                let errorData = '';
-                console.error('REASONING_ENGINE_CLIENT_ERROR: Streaming error response content:');
-                error.response.data.on('data', chunk => errorData += chunk.toString());
-                // Use await here to ensure the full error data is logged before the function potentially exits
-                await new Promise(resolveErrorStream => {
-                    error.response.data.on('end', () => {
-                        console.error(errorData);
-                        resolveErrorStream();
-                    });
-                    error.response.data.on('error', (errStreamErr) => { // Handle errors on the error stream itself
-                        console.error('REASONING_ENGINE_CLIENT_ERROR: Error reading error data stream:', errStreamErr.message);
-                        resolveErrorStream(); // Resolve anyway to not hang
-                    });
-                });
-            } else if (error.response.data) {
-                console.error('REASONING_ENGINE_CLIENT_ERROR: Data:', JSON.stringify(error.response.data, null, 2));
-            } else {
-                console.error('REASONING_ENGINE_CLIENT_ERROR: No response data from server on error.');
-            }
-        } else {
-            console.error('REASONING_ENGINE_CLIENT_ERROR: Message:', error.message);
-        }
+        await logDetailedError('streamAgentQuery - initial request', error, { projectId, location, agentId, userId, sessionId });
         throw error;
     }
 }
 
 // --- 3. Delete the session ---
 export async function deleteAgentSession(projectId, location, agentId, userId, sessionId) {
-    // console.log(`REASONING_ENGINE_CLIENT: Attempting to delete session_id: ${sessionId} for user_id: ${userId}...`); // Cleaned
+    console.log(`REASONING_ENGINE_CLIENT: Attempting to delete session_id: ${sessionId} for user_id: ${userId}...`);
     const accessToken = await getAccessTokenInternal();
     const url = `https://${location}-aiplatform.googleapis.com/${API_VERSION}/projects/${projectId}/locations/${location}/reasoningEngines/${agentId}:query`;
-
-    const requestBody = {
-        class_method: "delete_session",
-        input: {
-            user_id: userId,
-            session_id: sessionId
-        }
-    };
-
-    // console.log(`REASONING_ENGINE_CLIENT: Sending request to delete session: ${url}`); // Cleaned
-    // console.log("REASONING_ENGINE_CLIENT: Delete session request body:", JSON.stringify(requestBody)); // Cleaned
+    const requestBody = { class_method: "delete_session", input: { user_id: userId, session_id: sessionId } };
 
     try {
         const response = await axios.post(url, requestBody, {
-            headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
-            }
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
         });
-
-        // console.log("REASONING_ENGINE_CLIENT: Delete session response data:", JSON.stringify(response.data, null, 2)); // Cleaned
         if (response.status === 200) {
-            // console.log(`REASONING_ENGINE_CLIENT: Session ${sessionId} for user_id ${userId} deleted successfully.`); // Cleaned
+            console.log(`REASONING_ENGINE_CLIENT: Session ${sessionId} for user_id ${userId} deleted successfully.`);
         } else {
-            // Log warnings for unexpected non-200 success statuses
             console.warn(`REASONING_ENGINE_CLIENT_WARN: Session delete for ${sessionId} (user_id ${userId}) returned status ${response.status}. Data: ${JSON.stringify(response.data, null, 2)}`);
         }
         return response.data;
-
     } catch (error) {
-        console.error(`REASONING_ENGINE_CLIENT_ERROR: Error deleting agent session ${sessionId} for user_id ${userId}:`);
-        if (error.response) {
-            console.error('REASONING_ENGINE_CLIENT_ERROR: Status:', error.response.status);
-            console.error('REASONING_ENGINE_CLIENT_ERROR: Data:', JSON.stringify(error.response.data, null, 2));
-        } else {
-            console.error('REASONING_ENGINE_CLIENT_ERROR: Message:', error.message);
-        }
+        await logDetailedError('deleteAgentSession', error, { projectId, location, agentId, userId, sessionId });
         throw error;
     }
 }
