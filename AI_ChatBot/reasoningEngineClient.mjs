@@ -10,7 +10,6 @@ let accessTokenCache = { token: null, expiry: 0 };
 
 async function getAuthInstance() {
     if (!authInstance) {
-        console.log("REASONING_ENGINE_CLIENT: Initializing GoogleAuth instance...");
         authInstance = new GoogleAuth({
             scopes: GOOGLE_AUTH_SCOPES
         });
@@ -92,7 +91,6 @@ async function logDetailedError(context, error, additionalInfo = {}) {
 
 // --- 1. Create a new session ---
 export async function createAgentSession(projectId, location, agentId, userId) {
-    console.log(`REASONING_ENGINE_CLIENT: Attempting to create session for user_id: ${userId}, agent_id: ${agentId}...`);
     const accessToken = await getAccessTokenInternal();
     const url = `https://${location}-aiplatform.googleapis.com/${API_VERSION}/projects/${projectId}/locations/${location}/reasoningEngines/${agentId}:query`;
     const requestBody = { class_method: "create_session", input: { user_id: userId } };
@@ -110,7 +108,6 @@ export async function createAgentSession(projectId, location, agentId, userId) {
             console.error(`REASONING_ENGINE_CLIENT_ERROR: Failed to extract session ID from create_session. Full response:`, JSON.stringify(response.data, null, 2));
             throw new Error("REASONING_ENGINE_CLIENT: Failed to extract session ID from create_session response.");
         }
-        console.log(`REASONING_ENGINE_CLIENT: Session created successfully. Session ID: ${sessionId} for user_id: ${userId}`);
         return sessionId;
     } catch (error) {
         await logDetailedError('createAgentSession', error, { projectId, location, agentId, userId });
@@ -120,7 +117,6 @@ export async function createAgentSession(projectId, location, agentId, userId) {
 
 // --- 2. Stream the response with a message ---
 export async function streamAgentQuery(projectId, location, agentId, userId, sessionId, message) {
-    console.log(`REASONING_ENGINE_CLIENT: Attempting to stream query for session_id: ${sessionId}, user_id: ${userId}...`);
     const accessToken = await getAccessTokenInternal();
     const url = `https://${location}-aiplatform.googleapis.com/${API_VERSION}/projects/${projectId}/locations/${location}/reasoningEngines/${agentId}:streamQuery?alt=sse`;
     const requestBody = { class_method: "stream_query", input: { user_id: userId, session_id: sessionId, message: message } };
@@ -134,7 +130,6 @@ export async function streamAgentQuery(projectId, location, agentId, userId, ses
         response.data.on('data', (chunk) => fullResponseData += chunk.toString());
         return new Promise((resolve, reject) => {
             response.data.on('end', () => {
-                console.log('REASONING_ENGINE_CLIENT: Stream ended for query.');
                 resolve(fullResponseData);
             });
             response.data.on('error', (streamError) => {
@@ -150,7 +145,6 @@ export async function streamAgentQuery(projectId, location, agentId, userId, ses
 
 // --- 3. Delete the session ---
 export async function deleteAgentSession(projectId, location, agentId, userId, sessionId) {
-    console.log(`REASONING_ENGINE_CLIENT: Attempting to delete session_id: ${sessionId} for user_id: ${userId}...`);
     const accessToken = await getAccessTokenInternal();
     const url = `https://${location}-aiplatform.googleapis.com/${API_VERSION}/projects/${projectId}/locations/${location}/reasoningEngines/${agentId}:query`;
     const requestBody = { class_method: "delete_session", input: { user_id: userId, session_id: sessionId } };
@@ -160,7 +154,6 @@ export async function deleteAgentSession(projectId, location, agentId, userId, s
             headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
         });
         if (response.status === 200) {
-            console.log(`REASONING_ENGINE_CLIENT: Session ${sessionId} for user_id ${userId} deleted successfully.`);
         } else {
             console.warn(`REASONING_ENGINE_CLIENT_WARN: Session delete for ${sessionId} (user_id ${userId}) returned status ${response.status}. Data: ${JSON.stringify(response.data, null, 2)}`);
         }
