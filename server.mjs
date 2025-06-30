@@ -78,7 +78,7 @@ app.use('/api/exports', express.static(tempExportDir));
 // 1. public routes
 app.use('/api/login', loginRouter);
 const processHomeworkRouter = createProcessHomeworkRouter(uploadDir);
-app.use('/api/process-homework', processHomeworkRouter); // This should be protected
+app.use('/api/process-homework', processHomeworkRouter); // PUBLIC ROUTE
 
 // 2. authenticated routes
 app.use('/api/payment', requireAuth, paymentRouter);

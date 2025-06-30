@@ -13,11 +13,15 @@ import { text } from 'stream/consumers';
 const PROJECT_ID = 'hwai-agent';
 const LOCATION = 'us-central1';
 const AGENT_ID_IMAGE = '4439889525610643456';
-const USER_ID_FOR_IMAGE_TEST = 'node_sdk_image_user_006'; // Increment
+// const USER_ID_FOR_IMAGE_TEST = 'node_sdk_image_user_006'; // REMOVED
 
-async function imageUnderstand(filePath, mimeType) {
+async function imageUnderstand(filePath, mimeType, userId) {
     let sessionId = null;
     let imageBase64 = '';
+
+    if (!userId) {
+        throw new Error("imageUnderstand was called without a userId. This is a protected resource.");
+    }
 
     try {
         const imageBuffer = await fs.readFile(filePath);
@@ -27,7 +31,7 @@ async function imageUnderstand(filePath, mimeType) {
             PROJECT_ID,
             LOCATION,
             AGENT_ID_IMAGE,
-            USER_ID_FOR_IMAGE_TEST
+            userId
         );
 
         const messageContentObject = {
@@ -45,13 +49,13 @@ async function imageUnderstand(filePath, mimeType) {
             ]
         };
 
-        console.log(`Request for user_id: ${USER_ID_FOR_IMAGE_TEST} to agent_id: ${AGENT_ID_IMAGE} (session: ${sessionId}) being sent with image.`);
+        console.log(`Request for user_id: ${userId} to agent_id: ${AGENT_ID_IMAGE} (session: ${sessionId}) being sent with image.`);
 
         const streamedData = await streamAgentQuery(
             PROJECT_ID,
             LOCATION,
             AGENT_ID_IMAGE,
-            USER_ID_FOR_IMAGE_TEST,
+            userId,
             sessionId,
             messageContentObject
         );
@@ -85,7 +89,7 @@ async function imageUnderstand(filePath, mimeType) {
                     typeof firstAgentResponse.content.parts[0].text === 'string') {
                     text1 = firstAgentResponse.content.parts[0].text;
                 } else {
-                    console.warn(`Agent response for user_id: ${USER_ID_FOR_IMAGE_TEST}, session: ${sessionId} - first agent's response object did not have the expected text structure.`);
+                    console.warn(`Agent response for user_id: ${userId}, session: ${sessionId} - first agent's response object did not have the expected text structure.`);
                 }
 
                 // Extract text from the second agent's response (if it exists)
@@ -99,29 +103,29 @@ async function imageUnderstand(filePath, mimeType) {
                         typeof secondAgentResponse.content.parts[0].text === 'string') {
                         text2 = secondAgentResponse.content.parts[0].text;
                     } else {
-                        console.warn(`Agent response for user_id: ${USER_ID_FOR_IMAGE_TEST}, session: ${sessionId} - second agent's response object did not have the expected text structure (or was missing).`);
+                        console.warn(`Agent response for user_id: ${userId}, session: ${sessionId} - second agent's response object did not have the expected text structure (or was missing).`);
                     }
                 } else {
-                     console.log(`Agent response for user_id: ${USER_ID_FOR_IMAGE_TEST}, session: ${sessionId} - only one agent response object received.`);
+                     console.log(`Agent response for user_id: ${userId}, session: ${sessionId} - only one agent response object received.`);
                 }
                 
-                console.log(`Agent responses successfully processed for user_id: ${USER_ID_FOR_IMAGE_TEST}, session: ${sessionId}.`);
+                console.log(`Agent responses successfully processed for user_id: ${userId}, session: ${sessionId}.`);
                 return { text1: text1, text2: text2 }; // Return an object
 
             } else if (streamedData.trim() !== '') {
-                console.warn(`Agent for user_id: ${USER_ID_FOR_IMAGE_TEST}, session: ${sessionId} returned data, but it couldn't be parsed into JSON objects.`);
+                console.warn(`Agent for user_id: ${userId}, session: ${sessionId} returned data, but it couldn't be parsed into JSON objects.`);
                 return { text1: streamedData, text2: "" }; // Return raw as text1 if parsing fails
             } else {
-                console.log(`Agent for user_id: ${USER_ID_FOR_IMAGE_TEST}, session: ${sessionId} returned no data or only whitespace.`);
+                console.log(`Agent for user_id: ${userId}, session: ${sessionId} returned no data or only whitespace.`);
                 return { text1: "", text2: "" };
             }
         } catch (e) {
-            console.error(`\nFailed to process/parse agent stream response for user_id: ${USER_ID_FOR_IMAGE_TEST}, session: ${sessionId}. Error:`, e.message);
+            console.error(`\nFailed to process/parse agent stream response for user_id: ${userId}, session: ${sessionId}. Error:`, e.message);
             return { text1: "", text2: "" }; // Return empty on parsing error
         }
 
     } catch (error) {
-        console.error(`\n--- Error in imageUnderstand for user_id: ${USER_ID_FOR_IMAGE_TEST}, file: ${filePath} ---`);
+        console.error(`\n--- Error in imageUnderstand for user_id: ${userId}, file: ${filePath} ---`);
         if (error.response && error.response.data) {
             if (typeof error.response.data.on === 'function') {
                 let errorData = '';
@@ -147,11 +151,11 @@ async function imageUnderstand(filePath, mimeType) {
                     PROJECT_ID,
                     LOCATION,
                     AGENT_ID_IMAGE,
-                    USER_ID_FOR_IMAGE_TEST,
+                    userId,
                     sessionId
                 );
             } catch (deleteError) {
-                console.error(`Failed to delete image agent session ${sessionId} for user_id ${USER_ID_FOR_IMAGE_TEST}:`, deleteError.message);
+                console.error(`Failed to delete image agent session ${sessionId} for user_id ${userId}:`, deleteError.message);
             }
         }
     }
@@ -170,13 +174,16 @@ async function main() {
     }
 
     try {
-        const agentResponses = await imageUnderstand(imageFilePath, imageMimeType);
+        // NOTE: This main test function will now fail without a valid userId.
+        // You would need to simulate one for local testing, e.g., 'test_user_123'
+        console.log("NOTE: The local `main` test function requires a hardcoded user ID to run standalone.");
+        // const agentResponses = await imageUnderstand(imageFilePath, imageMimeType, 'manual_test_user_id');
 
-        if (agentResponses) {
-            console.log("\n--- Texts returned by imageUnderstand() [Main Execution] ---");
-        } else {
-            console.log("imageUnderstand() did not return expected response object. Check logs.");
-        }
+        // if (agentResponses) {
+        //     console.log("\n--- Texts returned by imageUnderstand() [Main Execution] ---");
+        // } else {
+        //     console.log("imageUnderstand() did not return expected response object. Check logs.");
+        // }
     } catch (error) {
         console.error("Main execution caught an error from imageUnderstand(). See previous logs for details.");
     }

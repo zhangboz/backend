@@ -3,6 +3,7 @@ import express from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import fsPromises from 'node:fs/promises';
+import jwt from 'jsonwebtoken'; // Import jwt to verify tokens
 
 // --- Import from GoogleAI module ---
 import { imageUnderstand } from '../AI_ChatBot/GoogleAI_Agent.mjs'; // Adjusted path
@@ -43,7 +44,6 @@ export default function createProcessHomeworkRouter(uploadDir) {
     });
 
     // Process Homework Route
-    // Mounted at /api/process-homework, so this handles POST to that path
     router.post('/', upload.single('homeworkImage'), async (req, res, next) => {
         console.log('[ProcessHomework Router] Received request.');
 
@@ -54,11 +54,43 @@ export default function createProcessHomeworkRouter(uploadDir) {
 
         const uploadedFilePath = req.file.path;
         const mimeType = req.file.mimetype;
-        console.log(`[ProcessHomework Router] File uploaded: ${uploadedFilePath}, MimeType: ${mimeType}`);
+        
+        // --- DYNAMIC USER ID LOGIC ---
+        let aiUserId = null;
+        const authHeader = req.headers['authorization'];
+        const token = authHeader && authHeader.split(' ')[1];
+
+        if (token) {
+            try {
+                const decoded = jwt.verify(token, process.env.JWT_SECRET);
+                if (decoded.user_id) {
+                    aiUserId = `image_user_${decoded.user_id}`;
+                }
+            } catch (err) {
+                console.warn(`[ProcessHomework Router] Invalid auth token provided. Treating as anonymous. Error: ${err.message}`);
+            }
+        }
+        
+        // If not authenticated, check for the anonymous ID from the form data
+        if (!aiUserId && req.body.anonymousId) {
+            const sanitizedAnonymousId = String(req.body.anonymousId).replace(/[^a-zA-Z0-9-]/g, '');
+            aiUserId = `anon_user_${sanitizedAnonymousId}`;
+        }
+
+        // Final check: if no ID could be determined, we cannot proceed.
+        if (!aiUserId) {
+            const err = new Error('无法识别用户身份，请求被中止。');
+            err.statusCode = 400;
+            console.error('[ProcessHomework Router] Critical: Could not determine user ID from token or anonymousId.');
+            return next(err);
+        }
+        // --- END DYNAMIC USER ID LOGIC ---
+
+        console.log(`[ProcessHomework Router] File uploaded: ${uploadedFilePath}, MimeType: ${mimeType}, Final AI_UserID: ${aiUserId}`);
 
         try {
-            // Call imageUnderstand and get the object with text1 and text2
-            const agentResponses = await imageUnderstand(uploadedFilePath, mimeType);
+            // Call imageUnderstand and pass the determined user ID
+            const agentResponses = await imageUnderstand(uploadedFilePath, mimeType, aiUserId);
 
             await fsPromises.unlink(uploadedFilePath);
             console.log(`[ProcessHomework Router] Deleted uploaded file: ${uploadedFilePath}`);
@@ -66,8 +98,8 @@ export default function createProcessHomeworkRouter(uploadDir) {
             // Send both texts in the JSON response
             res.json({
                 success: true,
-                reply1: agentResponses.text1, // Use text1 from the returned object
-                reply2: agentResponses.text2  // Use text2 from the returned object
+                reply1: agentResponses.text1,
+                reply2: agentResponses.text2
             });
         } catch (analysisError) {
             console.error('[ProcessHomework Router - Agent] Error analyzing image:', analysisError.message);
