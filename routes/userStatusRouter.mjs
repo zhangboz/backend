@@ -3,13 +3,12 @@ import db from '../db.mjs';
 
 const router = express.Router();
 
-// This route is protected by `requireAuth` and has `req.user`
-router.get('/', async (req, res, next) => {
-  const { user_id, email } = req.user;
+// MODIFICATION: This route is now at /status, mounted under /api/user in server.mjs
+router.get('/status', async (req, res, next) => {
+  // language is available on req.user because passport's deserializeUser does `SELECT *`
+  const { user_id, email, language } = req.user;
 
   try {
-    // --- THE FIX: Part 1 ---
-    // Ask the database for the current_period_end column.
     const result = await db.query(
       'SELECT subscription_status, cancel_at_period_end, current_period_end FROM subscriptions WHERE user_id = $1',
       [user_id]
@@ -17,14 +16,13 @@ router.get('/', async (req, res, next) => {
 
     const subscriptionData = result.rows[0];
 
-    // --- THE FIX: Part 2 ---
-    // Construct a full user object, now including currentPeriodEnd.
     const userObject = {
       id: user_id,
       email: email,
+      language: language || 'en', // Add language from the user record
       subscriptionStatus: subscriptionData?.subscription_status || 'inactive',
       cancelAtPeriodEnd: subscriptionData?.cancel_at_period_end || false,
-      currentPeriodEnd: subscriptionData?.current_period_end || null, // Add this line
+      currentPeriodEnd: subscriptionData?.current_period_end || null,
     };
 
 
@@ -35,5 +33,28 @@ router.get('/', async (req, res, next) => {
     next(error);
   }
 });
+
+// NEW FEATURE: A new route to update the user's language preference.
+// It will be available at PATCH /api/user/language
+router.patch('/language', async (req, res, next) => {
+    const { user_id } = req.user;
+    const { language } = req.body;
+
+    if (!language || !['en', 'zh'].includes(language)) {
+        return res.status(400).json({ success: false, message: 'Invalid language specified. Must be "en" or "zh".' });
+    }
+
+    try {
+        await db.query(
+            'UPDATE users SET language = $1 WHERE user_id = $2',
+            [language, user_id]
+        );
+        res.status(200).json({ success: true, message: 'Language preference updated.' });
+    } catch (error) {
+        console.error(`[SERVER] /api/user/language: Error updating language for user ${user_id}:`, error);
+        next(error);
+    }
+});
+
 
 export default router;

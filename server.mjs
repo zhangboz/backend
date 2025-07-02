@@ -82,7 +82,8 @@ app.use('/api/process-homework', processHomeworkRouter); // PUBLIC ROUTE
 
 // 2. authenticated routes
 app.use('/api/payment', requireAuth, paymentRouter);
-app.use('/api/user/status', requireAuth, userStatusRouter);
+// MODIFICATION: Mount the user router at /api/user to handle multiple user-related endpoints
+app.use('/api/user', requireAuth, userStatusRouter);
 
 // 3. subscription-required routes
 app.use('/api/export', requireAuth, requireSubscription, exportRouter);

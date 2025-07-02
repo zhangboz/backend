@@ -54,6 +54,8 @@ export default function createProcessHomeworkRouter(uploadDir) {
 
         const uploadedFilePath = req.file.path;
         const mimeType = req.file.mimetype;
+        // MODIFICATION: Get language from the form data, default to 'en'
+        const language = req.body.language || 'en';
         
         // --- DYNAMIC USER ID LOGIC ---
         let aiUserId = null;
@@ -86,11 +88,11 @@ export default function createProcessHomeworkRouter(uploadDir) {
         }
         // --- END DYNAMIC USER ID LOGIC ---
 
-        console.log(`[ProcessHomework Router] File uploaded: ${uploadedFilePath}, MimeType: ${mimeType}, Final AI_UserID: ${aiUserId}`);
+        console.log(`[ProcessHomework Router] File uploaded: ${uploadedFilePath}, MimeType: ${mimeType}, Final AI_UserID: ${aiUserId}, Language: ${language}`);
 
         try {
-            // Call imageUnderstand and pass the determined user ID
-            const agentResponses = await imageUnderstand(uploadedFilePath, mimeType, aiUserId);
+            // MODIFICATION: Call imageUnderstand and pass the determined language
+            const agentResponses = await imageUnderstand(uploadedFilePath, mimeType, aiUserId, language);
 
             await fsPromises.unlink(uploadedFilePath);
             console.log(`[ProcessHomework Router] Deleted uploaded file: ${uploadedFilePath}`);

@@ -118,8 +118,9 @@ router.post('/login', async (req, res, next) => {
       return res.status(401).json({ message: 'Invalid credentials.' });
     }
     
+    // MODIFICATION: Add language to the JWT payload
     const token = jwt.sign(
-      { user_id: user.user_id, email: user.email },
+      { user_id: user.user_id, email: user.email, language: user.language },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -144,8 +145,9 @@ router.get('/auth/google/callback',
   (req, res) => {
     // At this point, `req.user` is populated by Passport with the user record from the DB
     // We now create our own JWT and send the user back to the frontend.
+    // MODIFICATION: Add language to the JWT payload
     const token = jwt.sign(
-      { user_id: req.user.user_id, email: req.user.email },
+      { user_id: req.user.user_id, email: req.user.email, language: req.user.language },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );

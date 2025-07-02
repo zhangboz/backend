@@ -12,16 +12,25 @@ import { text } from 'stream/consumers';
 // --- Configuration for the Agent ---
 const PROJECT_ID = 'hwai-agent';
 const LOCATION = 'us-central1';
-const AGENT_ID_IMAGE = '4439889525610643456';
-// const USER_ID_FOR_IMAGE_TEST = 'node_sdk_image_user_006'; // REMOVED
+// MODIFICATION: Define agent IDs for different languages
+const AGENT_ID_ENGLISH = '4439889525610643456';
+const AGENT_ID_CHINESE = '2598550596713709568';
 
-async function imageUnderstand(filePath, mimeType, userId) {
+// MODIFICATION: Function now accepts a language parameter
+async function imageUnderstand(filePath, mimeType, userId, language = 'en') {
     let sessionId = null;
     let imageBase64 = '';
 
     if (!userId) {
         throw new Error("imageUnderstand was called without a userId. This is a protected resource.");
     }
+
+    // MODIFICATION: Select the agent ID based on the language parameter
+    const AGENT_IDS = {
+        'en': AGENT_ID_ENGLISH,
+        'zh': AGENT_ID_CHINESE,
+    };
+    const agentId = AGENT_IDS[language] || AGENT_IDS['en']; // Default to English if language is invalid
 
     try {
         const imageBuffer = await fs.readFile(filePath);
@@ -30,7 +39,7 @@ async function imageUnderstand(filePath, mimeType, userId) {
         sessionId = await createAgentSession(
             PROJECT_ID,
             LOCATION,
-            AGENT_ID_IMAGE,
+            agentId, // Use the selected agentId
             userId
         );
 
@@ -49,12 +58,12 @@ async function imageUnderstand(filePath, mimeType, userId) {
             ]
         };
 
-        console.log(`Request for user_id: ${userId} to agent_id: ${AGENT_ID_IMAGE} (session: ${sessionId}) being sent with image.`);
+        console.log(`Request for user_id: ${userId} to agent_id: ${agentId} (session: ${sessionId}) using language: ${language} being sent with image.`);
 
         const streamedData = await streamAgentQuery(
             PROJECT_ID,
             LOCATION,
-            AGENT_ID_IMAGE,
+            agentId, // Use the selected agentId
             userId,
             sessionId,
             messageContentObject
@@ -150,7 +159,7 @@ async function imageUnderstand(filePath, mimeType, userId) {
                 await deleteAgentSession(
                     PROJECT_ID,
                     LOCATION,
-                    AGENT_ID_IMAGE,
+                    agentId, // Use the selected agentId
                     userId,
                     sessionId
                 );
