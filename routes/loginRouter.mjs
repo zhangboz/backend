@@ -4,11 +4,12 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
+import crypto from 'crypto'; // <-- IMPORT CRYPTO
 import db from '../db.mjs';
+import { sendConfirmationEmail } from '../services/emailService.mjs'; // <-- IMPORT EMAIL SERVICE
 
 const router = express.Router();
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
-
 // ===== PASSPORT CONFIGURATION (Find or Create User) =====
 
 passport.use(new GoogleStrategy({
@@ -70,31 +71,96 @@ passport.deserializeUser(async (id, done) => {
 
 
 // ===== ROUTES =====
-
 // --- 1. User Registration (Email/Password) ---
 router.post('/register', async (req, res, next) => {
   const { email, password } = req.body;
+  
   if (!email || !password) {
     return res.status(400).json({ message: 'Email and password are required.' });
   }
+  if (password.length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters long.' });
+  }
+
   try {
-    const existingUser = await db.query('SELECT * FROM users WHERE email = $1', [email]);
-    if (existingUser.rows.length > 0) {
-      return res.status(409).json({ message: 'User with this email already exists.' });
+    const existingUserResult = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    
+    // --- MODIFIED LOGIC FOR EXISTING USERS ---
+    if (existingUserResult.rows.length > 0) {
+      const existingUser = existingUserResult.rows[0];
+
+      if (existingUser.is_email_confirmed) {
+        // User is fully registered and confirmed.
+        return res.status(409).json({ message: 'A user with this email already exists.' });
+      } else {
+        // User exists but is not confirmed.
+        const tokenExpires = new Date(existingUser.email_confirmation_expires);
+        if (tokenExpires > new Date()) {
+          // Token is still valid, tell them to check their email.
+          return res.status(409).json({ message: 'This email is pending confirmation. Please check your inbox for the activation link.' });
+        } else {
+          // Token has expired. Delete the stale record so they can re-register.
+          await db.query('DELETE FROM users WHERE user_id = $1', [existingUser.user_id]);
+          console.log(`[Register] Deleted stale, unconfirmed user record for ${email}`);
+        }
+      }
     }
+    // --- END OF MODIFIED LOGIC ---
+
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
-    const newUser = await db.query(
-      'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING user_id, email',
-      [email, hashedPassword]
+    
+    const confirmationToken = crypto.randomBytes(32).toString('hex');
+    const confirmationExpires = new Date(Date.now() + 3600000); // 1 hour
+
+    await db.query(
+      `INSERT INTO users (email, password, email_confirmation_token, email_confirmation_expires) 
+       VALUES ($1, $2, $3, $4)`,
+      [email, hashedPassword, confirmationToken, confirmationExpires]
     );
+
+    await sendConfirmationEmail(email, confirmationToken, FRONTEND_URL);
+
     res.status(201).json({
-      message: 'User registered successfully!',
-      user: newUser.rows[0],
+      message: 'Registration successful! Please check your email to activate your account.',
     });
   } catch (error) {
     next(error);
   }
+});
+
+
+// --- NEW: Email Confirmation Route ---
+router.get('/confirm-email/:token', async (req, res, next) => {
+    try {
+        const { token } = req.params;
+        
+        // Find user by token and check if it's not expired
+        const result = await db.query(
+            'SELECT * FROM users WHERE email_confirmation_token = $1 AND email_confirmation_expires > NOW()',
+            [token]
+        );
+        
+        const user = result.rows[0];
+        if (!user) {
+            // Redirect to a frontend page that can show an "invalid/expired token" error
+            return res.redirect(`${FRONTEND_URL}/login?error=invalid_token`);
+        }
+
+        // Token is valid! Update the user.
+        await db.query(
+            `UPDATE users 
+             SET is_email_confirmed = TRUE, email_confirmation_token = NULL, email_confirmation_expires = NULL 
+             WHERE user_id = $1`,
+            [user.user_id]
+        );
+
+        // Redirect to login page with a success message
+        res.redirect(`${FRONTEND_URL}/login?confirmed=true`);
+
+    } catch (error) {
+        next(error);
+    }
 });
 
 
@@ -108,9 +174,13 @@ router.post('/login', async (req, res, next) => {
     const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
     const user = result.rows[0];
 
-    // Check if user exists and if they registered using email/password (i.e., password is not null)
     if (!user || !user.password) {
       return res.status(401).json({ message: 'Invalid credentials or user signed up with Google.' });
+    }
+
+    // --- ADDED: CHECK IF EMAIL IS CONFIRMED ---
+    if (!user.is_email_confirmed) {
+        return res.status(403).json({ message: 'Please confirm your email before logging in.' });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
@@ -118,7 +188,6 @@ router.post('/login', async (req, res, next) => {
       return res.status(401).json({ message: 'Invalid credentials.' });
     }
     
-    // MODIFICATION: Add language to the JWT payload
     const token = jwt.sign(
       { user_id: user.user_id, email: user.email, language: user.language },
       process.env.JWT_SECRET,

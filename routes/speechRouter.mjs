@@ -12,7 +12,7 @@ const router = express.Router();
  */
 router.post('/', async (req, res, next) => {
     const { text, voice } = req.body; // 'voice' is optional
-    console.log('[SpeechRouter] Received request to generate speech, with text:', text, 'and voice:', voice);
+    console.log('[SpeechRouter] Received request to generate speech');
     // Validate that 'text' is provided and is a non-empty string
     if (!text || typeof text !== 'string' || text.trim() === '') {
         return res.status(400).json({ 
