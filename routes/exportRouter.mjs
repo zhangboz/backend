@@ -9,7 +9,7 @@ const router = express.Router();
 
 // Markdown Export Route (e.g., POST /api/export/docx)
 // Mounted at /api/export, so this handles POST to /:format
-router.post('/:format', async (req, res) => {
+router.post('/:format', async (req, res, next) => { // Added next for error handling
     const { format } = req.params;
     const { markdownText } = req.body;
 
@@ -46,10 +46,11 @@ router.post('/:format', async (req, res) => {
         scheduleFileDeletion(outputFilePath, 5 * 60 * 1000); // 5 minutes
 
     } catch (error) {
-        console.error(`[Export Router /${format}] Error during export:`, error.message, error.stack);
-        // For errors during exportMarkdown, directly respond or pass to a global handler if preferred.
-        // Here, a direct response is shown.
-        res.status(500).json({ success: false, message: `Error exporting to ${format}: ${error.message}` });
+        console.error(`[Export Router /${format}] Error during export:`, error.message);
+        // Pass to the global error handler
+        const errorForClient = new Error(`Error exporting to ${format}: ${error.message}`);
+        errorForClient.statusCode = 500;
+        next(errorForClient);
     }
 });
 

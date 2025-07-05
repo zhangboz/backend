@@ -34,7 +34,7 @@ export default function createProcessHomeworkRouter(uploadDir) {
             cb(null, true);
         } else {
             console.log(`[Multer - ProcessHomeworkRouter] Rejecting file: ${file.originalname} (${file.mimetype}) - Not an image or PDF`);
-            cb(new Error('仅支持上传图片或 PDF 文件!'), false); // This error will be caught by the global error handler
+            cb(new Error('Only image or pdf files are supported!'), false); // This error will be caught by the global error handler
         }
     };
 
@@ -50,7 +50,7 @@ export default function createProcessHomeworkRouter(uploadDir) {
 
         if (!req.file) {
             console.log('[ProcessHomework Router] No file uploaded or rejected by filter.');
-            return res.status(400).json({ success: false, message: '未接收到文件或文件类型不支持' });
+            return res.status(400).json({ success: false, message: 'File not recieved or format not supported.' });
         }
 
         const uploadedFilePath = req.file.path;
@@ -79,7 +79,7 @@ export default function createProcessHomeworkRouter(uploadDir) {
         }
 
         if (!aiUserId) {
-            const err = new Error('无法识别用户身份，请求被中止。');
+            const err = new Error('User identity could not be determined, request aborted.');
             err.statusCode = 400;
             console.error('[ProcessHomework Router] Critical: Could not determine user ID from token or anonymousId.');
             return next(err);
@@ -109,7 +109,7 @@ export default function createProcessHomeworkRouter(uploadDir) {
                     console.error(`[ProcessHomework Router] Failed to delete file after error: ${uploadedFilePath}`, unlinkErr);
                 }
             }
-            const errorForClient = new Error('AI 分析图片时出错');
+            const errorForClient = new Error('AI cached error in analyzing the image');
             errorForClient.detailsForLog = analysisError.message;
             errorForClient.statusCode = 500;
             next(errorForClient);
@@ -122,7 +122,7 @@ export default function createProcessHomeworkRouter(uploadDir) {
 
         if (!req.file) {
             console.log('[ProcessHomework Router /hand-to-markdown] No file uploaded or rejected by filter.');
-            return res.status(400).json({ success: false, message: '未接收到文件或文件类型不支持' });
+            return res.status(400).json({ success: false, message: 'File not recieved or format not supported.' });
         }
 
         const uploadedFilePath = req.file.path;
@@ -150,7 +150,7 @@ export default function createProcessHomeworkRouter(uploadDir) {
         }
 
         if (!aiUserId) {
-            const err = new Error('无法识别用户身份，请求被中止。');
+            const err = new Error('User identity could not be determined, request aborted.');
             err.statusCode = 400;
             console.error('[ProcessHomework Router] Critical: Could not determine user ID from token or anonymousId.');
             return next(err);
@@ -180,7 +180,7 @@ export default function createProcessHomeworkRouter(uploadDir) {
                     console.error(`[ProcessHomework Router] Failed to delete file after error: ${uploadedFilePath}`, unlinkErr);
                 }
             }
-            const errorForClient = new Error('AI 分析图片时出错');
+            const errorForClient = new Error('AI cached error in analyzing the image');
             errorForClient.detailsForLog = analysisError.message;
             errorForClient.statusCode = 500;
             next(errorForClient);

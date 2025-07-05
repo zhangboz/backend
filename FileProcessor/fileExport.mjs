@@ -22,35 +22,40 @@ console.log(`[FileExport] Temporary export directory ensured at: ${tempExportDir
  */
 export async function exportMarkdown(markdownText, targetFormat) {
     console.log(`[FileExport] Attempting to convert markdown to ${targetFormat}`);
+    const sanitizedMarkdown = markdownText.replace(/\|\|/g, '\n');
 
-    const pandocOutputArgs = {
-        'docx': { ext: '.docx', pandocFormat: 'docx' },
-        'pdf': { ext: '.pdf', pandocFormat: 'pdf' }, // Note: PDF often requires a LaTeX engine (like MiKTeX on Windows)
-        // Add other formats here if needed, e.g., 'html': { ext: '.html', pandocFormat: 'html' }
-    };
-
-    if (!pandocOutputArgs[targetFormat]) {
-        throw new Error(`Unsupported target format: ${targetFormat}. Supported formats: ${Object.keys(pandocOutputArgs).join(', ')}`);
-    }
-
-    const { ext, pandocFormat } = pandocOutputArgs[targetFormat];
-    const uniqueId = crypto.randomBytes(8).toString('hex'); // More robust unique ID
+    const ext = `.${targetFormat}`;
+    const uniqueId = crypto.randomBytes(8).toString('hex');
     const outputFileName = `export-${Date.now()}-${uniqueId}${ext}`;
     const outputFilePath = path.join(tempExportDir, outputFileName);
+
+    const referenceDocPath = path.join(__dirname, 'reference.docx'); // Path to your template
 
     return new Promise((resolve, reject) => {
         const pandocArgs = [
             '-f', 'markdown',
-            '-t', pandocFormat,
+            '-t', targetFormat,
+            '--mathml',
             '-o', outputFilePath,
             '-' // Read from stdin
         ];
 
-        // For PDF, you might need to specify a PDF engine if the default doesn't work
-        // or if you want to use a specific one like 'xelatex' for better Unicode support.
-        // if (targetFormat === 'pdf') {
-        //   pandocArgs.push('--pdf-engine=xelatex'); // Example
-        // }
+        // Add format-specific arguments
+        if (targetFormat === 'docx') {
+            // Check if reference doc exists before adding the argument
+            if (fs.existsSync(referenceDocPath)) {
+                 pandocArgs.splice(4, 0, '--reference-doc', referenceDocPath);
+                 console.log(`[FileExport] Using reference document: ${referenceDocPath}`);
+            } else {
+                 console.warn(`[FileExport] Warning: reference.docx not found at ${referenceDocPath}. Using Pandoc defaults.`);
+            }
+        } else if (targetFormat === 'pdf') {
+            // Using xelatex is a good default for unicode characters
+            pandocArgs.splice(4, 0, '--pdf-engine=xelatex');
+            // This tells pandoc to use a variable for colored code blocks,
+            // which requires the xcolor latex package.
+            pandocArgs.push('-V', 'colorlinks');
+        }
 
         console.log(`[FileExport] Pandoc args: ${pandocArgs.join(' ')}`);
         const pandocProcess = spawn('pandoc', pandocArgs);
@@ -58,7 +63,7 @@ export async function exportMarkdown(markdownText, targetFormat) {
         let processError = '';
         let processOutput = '';
 
-        pandocProcess.stdin.write(markdownText);
+        pandocProcess.stdin.write(sanitizedMarkdown);
         pandocProcess.stdin.end();
 
         pandocProcess.stdout.on('data', (data) => {
@@ -79,8 +84,8 @@ export async function exportMarkdown(markdownText, targetFormat) {
             } else {
                 console.error(`[FileExport] Pandoc process exited with code ${code}.`);
                 let errorMessage = `Pandoc conversion failed (exit code ${code}).`;
-                if (processError.toLowerCase().includes("pdflatex not found") || processError.toLowerCase().includes("latexmk not found")) {
-                    errorMessage += " PDF generation often requires a LaTeX distribution (like MiKTeX for Windows, or TeX Live for Linux/macOS) to be installed and in the system PATH.";
+                if (processError.toLowerCase().includes("pdflatex not found") || processError.toLowerCase().includes("latexmk not found") || processError.toLowerCase().includes("xelatex not found")) {
+                    errorMessage += " PDF generation requires a LaTeX distribution (like MiKTeX for Windows, or TeX Live for Linux/macOS) to be installed and in the system PATH.";
                 } else if (processError) {
                     errorMessage += ` Details: ${processError.substring(0, 500)}`; // Limit error length
                 }
