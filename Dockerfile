@@ -4,14 +4,17 @@ FROM node:20-bookworm
 # Set the working directory inside the container
 WORKDIR /usr/src/app
 
-# Install system dependencies: Pandoc and LaTeX for PDF generation
+# Install system dependencies AND rebuild the TeX file database
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pandoc \
     texlive-latex-base \
     texlive-fonts-recommended \
     texlive-latex-extra \
-    texlive-fonts-extra \ 
+    texlive-fonts-extra \
     texlive-xetex \
+    # After installing, run mktexlsr to update TeX's file index
+    && mktexlsr \
+    # Clean up apt cache
     && rm -rf /var/lib/apt/lists/*
 
 # Copy package configuration files
