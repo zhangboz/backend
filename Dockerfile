@@ -1,37 +1,29 @@
-# Choose a base Node.js image
+# Use the Node.js 20 base image
 FROM node:20-bookworm
 
-# Set a working directory in the container
+# Set the working directory inside the container
 WORKDIR /usr/src/app
 
-# --- Install System Dependencies ---
-# Update package lists and install Pandoc and a TeX Live distribution for PDF generation.
-# 'no-install-recommends' helps keep the image size smaller.
-# We need 'texlive-xetex' because your code specifies '--pdf-engine=xelatex'.
-# We need 'texlive-latex-extra' for packages like 'xcolor' used by '-V colorlinks'.
+# Install system dependencies: Pandoc and LaTeX for PDF generation
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pandoc \
-    # ---- For PDF Generation ----
     texlive-latex-base \
     texlive-fonts-recommended \
     texlive-latex-extra \
     texlive-xetex \
-    # ---- End PDF Packages ----
-    # Clean up apt cache to reduce image size in this layer
     && rm -rf /var/lib/apt/lists/*
 
-# Copy package.json and package-lock.json
+# Copy package configuration files
 COPY package*.json ./
 
-# Install Node.js dependencies for production
+# Install Node.js production dependencies
 RUN npm ci --omit=dev
 
-# Copy the rest of your application code
+# Copy the rest of the application code
 COPY . .
 
-# Expose the port your app runs on
+# Tell Docker which port the app will run on
 EXPOSE 5000
 
-# Define the command to run your application
-# Ensure this path is correct for your project structure
-CMD [ "node", "backend/server.mjs" ]
+# Define the command to start the app
+CMD [ "node", "server.mjs" ]
