@@ -12,9 +12,10 @@ import { text } from 'stream/consumers';
 // --- Configuration for the Agent ---
 const PROJECT_ID = 'hwai-agent';
 const LOCATION = 'us-central1';
-// MODIFICATION: Define agent IDs for different languages
+// MODIFICATION: Define agent IDs for different languages and features
 const AGENT_ID_ENGLISH = '4439889525610643456';
 const AGENT_ID_CHINESE = '2598550596713709568';
+const AGENT_ID_HANDWRITTEN = '1457503817686843392'; // <-- NEW AGENT ID
 
 // MODIFICATION: Function now accepts a language parameter
 async function imageUnderstand(filePath, mimeType, userId, language = 'en') {
@@ -170,6 +171,118 @@ async function imageUnderstand(filePath, mimeType, userId, language = 'en') {
     }
 }
 
+// --- NEW FUNCTION for Handwritten Notes ---
+async function handWrittenToMarkdown(filePath, mimeType, userId) {
+    let sessionId = null;
+    let imageBase64 = '';
+    const agentId = AGENT_ID_HANDWRITTEN; // Use the new agent ID
+
+    if (!userId) {
+        throw new Error("handWrittenToMarkdown was called without a userId. This is a protected resource.");
+    }
+
+    try {
+        const imageBuffer = await fs.readFile(filePath);
+        imageBase64 = imageBuffer.toString('base64');
+
+        sessionId = await createAgentSession(
+            PROJECT_ID,
+            LOCATION,
+            agentId,
+            userId
+        );
+
+        const messageContentObject = {
+            role: "user",
+            parts: [
+                { text: "image" },
+                { inline_data: { mime_type: mimeType, data: imageBase64 } }
+            ]
+        };
+
+        console.log(`Request for user_id: ${userId} to agent_id: ${agentId} (session: ${sessionId}) for handwriting transcription being sent with image.`);
+
+        const streamedData = await streamAgentQuery(
+            PROJECT_ID,
+            LOCATION,
+            agentId,
+            userId,
+            sessionId,
+            messageContentObject
+        );
+
+        // This new agent only returns one text output.
+        try {
+            const jsonStrings = streamedData.trim().split('\n').filter(line => line.trim() !== '');
+            const jsonObjects = [];
+            jsonStrings.forEach(jsonString => {
+                try {
+                    jsonObjects.push(JSON.parse(jsonString));
+                } catch (parseError) {
+                    console.warn("Minor: Failed to parse a JSON string from the stream:", parseError.message, "String:", jsonString);
+                }
+            });
+
+            let text1 = "";
+
+            if (jsonObjects.length > 0) {
+                const agentResponse = jsonObjects[0];
+                if (agentResponse?.content?.parts?.[0]?.text) {
+                    text1 = agentResponse.content.parts[0].text;
+                } else {
+                    console.warn(`Agent response for user_id: ${userId}, session: ${sessionId} - response object did not have the expected text structure.`);
+                }
+                console.log(`Agent response successfully processed for user_id: ${userId}, session: ${sessionId}.`);
+                return { text1: text1 }; // Return an object with only text1
+            } else if (streamedData.trim() !== '') {
+                console.warn(`Agent for user_id: ${userId}, session: ${sessionId} returned data, but it couldn't be parsed into JSON objects.`);
+                return { text1: streamedData }; // Return raw as text1 if parsing fails
+            } else {
+                console.log(`Agent for user_id: ${userId}, session: ${sessionId} returned no data or only whitespace.`);
+                return { text1: "" };
+            }
+        } catch (e) {
+            console.error(`\nFailed to process/parse agent stream response for user_id: ${userId}, session: ${sessionId}. Error:`, e.message);
+            return { text1: "" }; // Return empty on parsing error
+        }
+
+    } catch (error) {
+        console.error(`\n--- Error in handWrittenToMarkdown for user_id: ${userId}, file: ${filePath} ---`);
+        if (error.response && error.response.data) {
+            if (typeof error.response.data.on === 'function') {
+                let errorData = '';
+                console.error('Streaming error response content:');
+                error.response.data.on('data', chunk => errorData += chunk.toString());
+                await new Promise(resolve => error.response.data.on('end', () => {
+                    console.error(errorData);
+                    resolve();
+                }));
+            } else {
+                console.error('Error Data from Axios:', JSON.stringify(error.response.data, null, 2));
+            }
+        } else if (error.message) {
+            console.error('Error Message:', error.message);
+        } else {
+            console.error('Unknown error:', error);
+        }
+        throw error;
+    } finally {
+        if (sessionId) {
+            try {
+                await deleteAgentSession(
+                    PROJECT_ID,
+                    LOCATION,
+                    agentId,
+                    userId,
+                    sessionId
+                );
+            } catch (deleteError) {
+                console.error(`Failed to delete handwriting agent session ${sessionId} for user_id ${userId}:`, deleteError.message);
+            }
+        }
+    }
+}
+
 // --- Main Execution to Test (Example Usage) ---
 async function main() {
     const imageFilePath = './math151_simple_derivative.png'; // Ensure this file exists
@@ -201,5 +314,5 @@ async function main() {
 // Run the main test function if this script is executed directly
 // main(); // Comment out if you only want to import it
 
-// Export the function for use in other modules
-export { imageUnderstand };
+// Export the functions for use in other modules
+export { imageUnderstand, handWrittenToMarkdown };
