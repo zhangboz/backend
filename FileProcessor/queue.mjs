@@ -22,7 +22,7 @@ export const createExportWorker = (processor) => {
     // Let's start with 1 for simplicity and predictability. You can increase this later.
     return new Worker('file-export-queue', processor, {
         connection,
-        concurrency: 1 // Each worker server will process ONE job at a time.
+        concurrency: 2 // Each worker server will process ONE job at a time.
     });
 };
 
