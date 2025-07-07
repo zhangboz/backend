@@ -6,7 +6,7 @@ WORKDIR /usr/src/app
 
 # Install system dependencies needed for file conversion.
 # This includes Pandoc and a full TeX Live distribution for PDF generation.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
     pandoc \
     texlive-latex-base \
     texlive-fonts-recommended \

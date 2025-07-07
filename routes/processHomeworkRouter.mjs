@@ -109,7 +109,7 @@ export default function createProcessHomeworkRouter(uploadDir) {
                     console.error(`[ProcessHomework Router] Failed to delete file after error: ${uploadedFilePath}`, unlinkErr);
                 }
             }
-            const errorForClient = new Error('AI cached error in analyzing the image');
+            const errorForClient = new Error('AI catched error in analyzing the image');
             errorForClient.detailsForLog = analysisError.message;
             errorForClient.statusCode = 500;
             next(errorForClient);
@@ -180,7 +180,7 @@ export default function createProcessHomeworkRouter(uploadDir) {
                     console.error(`[ProcessHomework Router] Failed to delete file after error: ${uploadedFilePath}`, unlinkErr);
                 }
             }
-            const errorForClient = new Error('AI cached error in analyzing the image');
+            const errorForClient = new Error('AI catched error in analyzing the image');
             errorForClient.detailsForLog = analysisError.message;
             errorForClient.statusCode = 500;
             next(errorForClient);
