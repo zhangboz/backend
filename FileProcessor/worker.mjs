@@ -1,42 +1,72 @@
-// backend/worker.mjs (NEW FILE)
+// backend/worker.mjs (MODIFIED FOR GCS)
 import 'dotenv/config';
-import { createExportWorker } from './queue.mjs';
-import { exportMarkdown, scheduleFileDeletion } from './fileExport.mjs';
+import fs from 'fs-extra';
 import path from 'node:path';
+import { createExportWorker } from './queue.mjs';
+import { exportMarkdown } from './fileExport.mjs';
+
+// --- NEW IMPORTS FOR GCS ---
+import { bucket } from './gcs_client.mjs'; // Use our new GCS client
 
 console.log('[Worker] Starting up...');
 
 const processor = async (job) => {
-    const { markdownText, targetFormat, host } = job.data;
+    const { markdownText, targetFormat } = job.data;
     console.log(`[Worker] Picked up job ${job.id}: Convert to ${targetFormat}.`);
 
+    let localOutputFilePath = null; // Keep track of the local file for cleanup
+
     try {
-        // 1. Perform the heavy task
-        const outputFilePath = await exportMarkdown(markdownText, targetFormat);
-        const outputFileName = path.basename(outputFilePath);
+        // 1. Perform the heavy task (generates file on worker's temporary local disk)
+        localOutputFilePath = await exportMarkdown(markdownText, targetFormat);
+        const outputFileName = path.basename(localOutputFilePath);
 
-        // 2. Construct the final download URL
-        const downloadUrl = `${host}/api/exports/${outputFileName}`;
-        console.log(`[Worker] Job ${job.id} successful. File at: ${downloadUrl}`);
+        if (!bucket) {
+            throw new Error("GCS bucket is not configured. Check environment variables.");
+        }
 
-        // 3. Schedule the file for deletion
-        scheduleFileDeletion(outputFilePath, 10 * 60 * 1000); // 10 minutes
+        // --- NEW: UPLOAD TO GCS ---
+        console.log(`[Worker] Job ${job.id}: Uploading ${outputFileName} to GCS bucket ${bucket.name}...`);
+        
+        await bucket.upload(localOutputFilePath, {
+            destination: outputFileName,
+        });
 
-        // 4. Return the result. BullMQ will store this with the job.
+        console.log(`[Worker] Job ${job.id}: GCS upload successful.`);
+        const gcsFile = bucket.file(outputFileName);
+
+
+        // --- NEW: CREATE A SIGNED DOWNLOAD URL ---
+        const options = {
+            version: 'v4',
+            action: 'read',
+            expires: Date.now() + 15 * 60 * 1000, // 15 minutes
+            responseDisposition: `attachment; filename="${outputFileName}"`, // Prompts download
+        };
+        const [downloadUrl] = await gcsFile.getSignedUrl(options);
+        console.log(`[Worker] Job ${job.id} successful. GCS Signed URL generated.`);
+
+        // 3. Return the result. The frontend will use this GCS URL directly.
         return { downloadUrl, fileName: outputFileName };
 
     } catch (error) {
         console.error(`[Worker] Job ${job.id} failed:`, error.message);
-        // Throwing an error tells BullMQ the job failed. It can be configured to retry.
         throw error;
+    } finally {
+        // 4. Clean up the temporary file from the worker's local disk
+        if (localOutputFilePath) {
+            fs.unlink(localOutputFilePath)
+              .then(() => console.log(`[Worker] Cleaned up local file: ${localOutputFilePath}`))
+              .catch(err => console.error(`[Worker] Failed to cleanup local file: ${err.message}`));
+        }
     }
 };
 
-// Create and start the worker
+// Create and start the worker (No change here)
 const worker = createExportWorker(processor);
 
 worker.on('completed', (job, result) => {
-  console.log(`[Worker] Job ${job.id} has completed with result:`, result.downloadUrl);
+  console.log(`[Worker] Job ${job.id} has completed. Download URL ready.`);
 });
 
 worker.on('failed', (job, err) => {

@@ -1,11 +1,12 @@
-// backend/routes/exportRouter.mjs (MODIFIED)
+// backend/routes/exportRouter.mjs (SIMPLIFIED)
 import express from 'express';
-import { exportQueue } from '../FileProcessor/queue.mjs'; // <-- Import the queue
-import { Job } from 'bullmq'; // <-- Import Job to get job statuses
+// Note the path change for queue
+import { exportQueue } from '../FileProcessor/queue.mjs'; 
+import { Job } from 'bullmq';
 
 const router = express.Router();
 
-// MODIFIED: This route now ADDS a job to the queue
+// This route still ADDS a job to the queue
 router.post('/:format', async (req, res, next) => {
     const { format } = req.params;
     const { markdownText } = req.body;
@@ -22,20 +23,14 @@ router.post('/:format', async (req, res, next) => {
     }
 
     try {
-        // The host is needed by the worker to construct the correct download URL
-        const host = `${req.protocol}://${req.get('host')}`;
-
-        // Add a job to the queue
+        // The `host` is no longer needed by the worker
         const job = await exportQueue.add('convert-file', {
             markdownText,
             targetFormat: format.toLowerCase(),
-            host // Pass the host to the worker
         });
 
         console.log(`[Export Router /${format}] Job ${job.id} queued successfully.`);
 
-        // Respond to the user immediately with the Job ID.
-        // The frontend will use this ID to check the status.
         res.status(202).json({
             success: true,
             message: `Your document conversion has been queued.`,
@@ -48,7 +43,7 @@ router.post('/:format', async (req, res, next) => {
     }
 });
 
-// NEW: A route for the frontend to check the job's status
+// The status route remains the same
 router.get('/status/:jobId', async (req, res, next) => {
     try {
         const { jobId } = req.params;
@@ -59,13 +54,13 @@ router.get('/status/:jobId', async (req, res, next) => {
         }
 
         const state = await job.getState();
-        const returnValue = job.returnvalue; // The result from the worker
+        const returnValue = job.returnvalue; // This will contain { downloadUrl, fileName } on completion
 
         res.json({
             success: true,
             jobId,
-            state, // e.g., 'completed', 'waiting', 'active', 'failed'
-            result: returnValue // This will contain { downloadUrl, fileName } on completion
+            state,
+            result: returnValue 
         });
 
     } catch (error) {
@@ -74,5 +69,7 @@ router.get('/status/:jobId', async (req, res, next) => {
     }
 });
 
+// !!! THIS ROUTE IS NO LONGER NEEDED AND CAN BE DELETED !!!
+// router.get('/:fileName', ...);
 
 export default router;

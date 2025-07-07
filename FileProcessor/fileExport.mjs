@@ -9,10 +9,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Ensure a temporary directory for exported files exists
-const tempExportDir = path.join(__dirname, '..', 'temp_exports'); // Place it one level up, sibling to 'uploads' and 'FileProcessor'
+const tempExportDir = process.env.EXPORT_DIR || path.join(__dirname, '..', 'temp_exports');
 fs.ensureDirSync(tempExportDir);
 console.log(`[FileExport] Temporary export directory ensured at: ${tempExportDir}`);
-
 /**
  * Converts Markdown text to a specified file format using Pandoc.
  * @param {string} markdownText The Markdown content to convert.
