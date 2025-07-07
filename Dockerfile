@@ -1,33 +1,39 @@
 # Use the Node.js 20 base image
 FROM node:20-bookworm
 
-# Set the working directory inside the container
+# Set the working directory
 WORKDIR /usr/src/app
 
-# Install system dependencies needed for file conversion.
-# This includes Pandoc and a full TeX Live distribution for PDF generation.
-RUN apt-get update && apt-get install -y \
+# --- LAYER 1: System Dependencies ---
+# These are installed first and will be cached. This layer is only rebuilt if
+# this command changes, which should be almost never.
+# We also add --no-install-recommends to keep the install smaller and clean up after.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     pandoc \
     texlive-latex-base \
     texlive-fonts-recommended \
     texlive-latex-extra \
     texlive-fonts-extra \
     texlive-xetex \
-    && mktexlsr \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy package configuration files
-COPY package*.json ./
+# --- LAYER 2: Node.js Dependencies ---
+# Copy only the package manager files.
+COPY package.json package-lock.json ./
 
-# Install Node.js production dependencies
-# This will install express, bullmq, etc.
+# Install Node.js dependencies. This layer is only rebuilt if package.json or
+# package-lock.json changes. Code changes will NOT trigger this 'npm ci'.
 RUN npm ci --omit=dev
 
-# Copy the rest of the application code (including your worker.mjs)
+# --- LAYER 3: Application Code ---
+# Copy the rest of your application code LAST.
+# This is the layer that will be rebuilt on every code change. Because the
+# expensive layers above are cached, this step will be very fast.
 COPY . .
 
-# Tell Docker which port the app might run on (not strictly needed for a worker, but good practice)
+# Expose port (good practice)
 EXPOSE 5000
 
-# Define the command to start the WORKER process using the npm script.
+# Define the command to start the worker
 CMD [ "npm", "run", "start:worker" ]

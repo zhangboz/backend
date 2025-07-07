@@ -1,0 +1,17 @@
+# .dockerignore
+
+# Git files
+.git
+.gitignore
+
+# Node modules are installed by the RUN npm ci command inside the container
+node_modules
+
+# Local environment variables
+.env
+.env.*
+
+# Logs and temporary files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
