@@ -1,3 +1,5 @@
+// paymentRouter.mjs
+
 import express from 'express';
 import Stripe from 'stripe';
 import db from '../db.mjs';
@@ -8,7 +10,6 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
 router.post('/create-checkout-session', async (req, res, next) => {
   const { user_id, email } = req.user;
-  // Get the return path from the request body, defaulting to a safe page.
   const { returnPath = '/account' } = req.body; 
   
   const PRICE_ID = process.env.STRIPE_PRICE_ID;
@@ -34,13 +35,9 @@ router.post('/create-checkout-session', async (req, res, next) => {
       }
     }
     
-    // --- FIX START ---
-    // Construct the success and cancel URLs using the provided returnPath.
-    // This ensures that whether the user succeeds or cancels, they return to the page they started from.
     const cleanReturnPath = returnPath.startsWith('/') ? returnPath : `/${returnPath}`;
     const successUrl = `${FRONTEND_URL}${cleanReturnPath}?payment=success`;
-    const cancelUrl = `${FRONTEND_URL}${cleanReturnPath}`; // Return user to the same place on cancel.
-    // --- FIX END ---
+    const cancelUrl = `${FRONTEND_URL}${cleanReturnPath}`;
 
     const sessionPayload = {
       payment_method_types: ['card'],
@@ -48,6 +45,14 @@ router.post('/create-checkout-session', async (req, res, next) => {
       line_items: [{ price: PRICE_ID, quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
+      // --- ADDITION START ---
+      // This is the key part for adding a free trial.
+      // It instructs Stripe to create the subscription with a 7-day trial period.
+      // The customer's card will not be charged until the trial ends.
+      subscription_data: {
+        trial_period_days: 7,
+      },
+      // --- ADDITION END ---
     };
 
     if (existingSub?.stripe_customer_id) {
