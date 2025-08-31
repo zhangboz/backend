@@ -73,37 +73,87 @@ This is the most critical part of the application. It's designed to be robust, s
 
 ---
 
-## Setup & Running
+## Local Development with Docker
 
-1.  Ensure Node.js and npm are installed.
-2.  Install dependencies: `npm install`
-3.  Create a `.env` file in the `backend` root directory with the following variables:
+This project uses Docker and Docker Compose to create a consistent, isolated, and production-like development environment. This approach ensures that all services (PostgreSQL with pgvector, Redis, and the Node.js app) run exactly the same on any machine, without interfering with system-level installations.
+
+All commands below should be run from the `backend` directory, where the `docker-compose.yml` file is located.
+
+### 1. Starting All Services
+
+This is your main command to fire everything up. You have a few options:
+
+*   **To start and see all logs in your terminal (recommended for debugging):**
+    ```bash
+    docker-compose up
     ```
-    # Server
-    PORT=5000
-    FRONTEND_URL=http://localhost:3000
+    This will take over your terminal window. To stop everything, press `Ctrl + C`.
 
-    # Database
-    DB_USER=your_db_user
-    DB_HOST=localhost
-    DB_NAME=your_db_name
-    DB_PASSWORD=your_db_password
-    DB_PORT=5432
-
-    # Authentication
-    JWT_SECRET=a_very_strong_and_secret_key_for_jwt
-
-    # Stripe
-    STRIPE_SECRET_KEY=sk_test_...
-    STRIPE_WEBHOOK_SECRET=whsec_...
-    STRIPE_PRICE_ID=price_...
-
-    # AI & Other Services
-    GEMINI_API_KEY=your_google_gemini_api_key
+*   **To start services in the background (detached mode):**
+    ```bash
+    docker-compose up -d
     ```
-4.  Start the server: `npm start`
-5.  In a separate terminal, start the Stripe webhook listener: `stripe listen --forward-to localhost:5000/api/payment/webhook`
+    This is useful when you just want the services running so you can work on your code.
 
+*   **To rebuild your app's image after changes:**
+    If you change your `Dockerfile` or install new npm packages (`package.json`), you must tell Docker to rebuild the image.
+    ```bash
+    docker-compose up --build
+    ```
+    *(You can also combine this with detached mode: `docker-compose up -d --build`)*
+
+### 2. Connecting to the Database
+
+To interact with your PostgreSQL database using `psql`, run the following command. This executes `psql` *inside* the running database container.
+
+```bash
+docker-compose exec db psql -U postgres -d homeworkhelpai
+```
+
+**Pro Tip:** If you run a query that returns many rows and get stuck at an `(END)` message, simply press **`q`** to quit the pager and return to the `psql>` prompt.
+
+### 3. Other Useful Docker Commands
+
+Here are some other essential commands for managing your local environment:
+
+*   **To stop all running services:**
+    (If you started with `docker-compose up -d`)
+    ```bash
+    docker-compose down
+    ```
+
+*   **To stop services AND delete the database data (for a complete reset):**
+    This is useful if you want to start completely fresh.
+    ```bash
+    docker-compose down -v
+    ```
+
+*   **To view the logs of all running services:**
+    (If you started in detached mode)
+    ```bash
+    docker-compose logs
+    ```
+
+*   **To follow the logs of a specific service in real-time:**
+    For example, to watch only the backend's logs:
+    ```bash
+    docker-compose logs -f backend
+    ```
+
+*   **To see the status of your running services:**
+    ```bash
+    docker-compose ps
+    ```
+
+### Typical Local Workflow
+
+1.  **Start of day:** `cd backend` then `docker-compose up -d`.
+2.  **Work on code.** Changes to `.mjs` files are reflected automatically thanks to the volume mount.
+3.  **Need to check the DB:** `docker-compose exec db psql -U postgres -d homeworkhelpai`.
+4.  **Something's wrong?** `docker-compose logs -f backend` to see live error messages.
+5.  **Installed a new npm package?** `docker-compose up -d --build` to rebuild the image with the new package.
+6.  **End of day:** `docker-compose down`.
+7.  **Need to start over from scratch?** `docker-compose down -v`, then `docker-compose up`.
 ## Important Reminders
 
 *   **Stripe Webhook is CRITICAL**: The application's subscription logic will not function without the Stripe CLI listener running in development. In production, you must configure a permanent webhook endpoint in your Stripe Dashboard.

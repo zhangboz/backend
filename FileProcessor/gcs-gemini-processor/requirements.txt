@@ -2,3 +2,4 @@ functions-framework==3.*
 google-genai
 google-cloud-storage
 pydantic>=2.0.0
+requests # <--- NEW: Add requests

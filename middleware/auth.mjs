@@ -51,3 +51,19 @@ export const requireSubscription = async (req, res, next) => {
     next(error);
   }
 };
+
+export const requireAdmin = (req, res, next) => {
+    // This middleware should run AFTER requireAuth, so req.user will be populated.
+    if (!req.user) {
+        return res.status(401).json({ message: 'Authentication required.' });
+    }
+
+    const ADMIN_USER_ID = 4;
+
+    if (req.user.user_id !== ADMIN_USER_ID) {
+        return res.status(403).json({ message: 'Forbidden: Admin access required.' });
+    }
+
+    console.log('[requireAdmin] Access granted.');
+    next();
+};

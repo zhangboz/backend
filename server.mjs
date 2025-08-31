@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import multer from 'multer'; // Import multer for using MulterError in global error handler
 import passport from 'passport'; // <-- Import Passport
 import session from 'express-session'; // <-- Import express-session
-import { requireAuth, requireSubscription } from './middleware/auth.mjs';
+import { requireAuth, requireSubscription, requireAdmin } from './middleware/auth.mjs';
+import { verifyWebhookSecret } from './middleware/webhookAuth.mjs'; // <-- NEW: Import webhook auth middleware
 
 // --- Import Routers ---
 import loginRouter from './routes/loginRouter.mjs';
@@ -18,7 +19,8 @@ import speechRouter from './routes/speechRouter.mjs';
 import webhookRouter from './routes/webhookRouter.mjs';
 import paymentRouter from './routes/paymentRouter.mjs';
 import userStatusRouter from './routes/userStatusRouter.mjs';
-
+import gcsWebhookRouter from './routes/gcsWebhook.mjs'; // <-- IMPORT the new GCS webhook router
+import adminRouter from './routes/adminRouter.mjs'; // <-- IMPORT the new admin router
 // --- Calculate __dirname equivalent in ESM ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,11 +44,14 @@ app.use(cors({
   credentials: true
 }));
 app.set('trust proxy', 1); // Trust proxy for Render's HTTPS redirection
-// Raw body parser for Stripe webhook
+
+// Raw body parser for Stripe webhook - specific path
 app.use('/api/payment/webhook', express.raw({type: 'application/json'}), webhookRouter);
 
-app.use(express.json({ limit: '5mb' })); // Allow larger JSON payloads for markdown
-app.use(express.urlencoded({ extended: true, limit: '5mb' })); // For form data
+// General JSON and URL-encoded body parsers - apply to all other paths
+// Make sure these are AFTER any specific raw body parsers if paths overlap or you need raw for specific routes
+app.use(express.json({ limit: '50mb' })); // Allow larger JSON payloads for markdown
+app.use(express.urlencoded({ extended: true, limit: '50mb' })); // For form data
 
 // --- Session and Passport Middleware (NEEDS TO BE BEFORE ROUTES) ---
 app.use(session({
@@ -77,6 +82,8 @@ app.use('/api/exports', express.static(tempExportDir));
 // --- Mount Routers ---
 // 1. public routes
 app.use('/api/login', loginRouter);
+// NEW: Apply webhookAuth middleware to protect the GCS webhook endpoint
+app.use('/api/gcs-webhook', verifyWebhookSecret, gcsWebhookRouter); // <-- ADD THE NEW ROUTE HERE WITH AUTH
 const processHomeworkRouter = createProcessHomeworkRouter(uploadDir);
 app.use('/api/process-homework', processHomeworkRouter); // PUBLIC ROUTE
 
@@ -84,6 +91,7 @@ app.use('/api/process-homework', processHomeworkRouter); // PUBLIC ROUTE
 app.use('/api/payment', requireAuth, paymentRouter);
 // MODIFICATION: Mount the user router at /api/user to handle multiple user-related endpoints
 app.use('/api/user', requireAuth, userStatusRouter);
+app.use('/api/admin', requireAuth, requireAdmin, adminRouter); // <-- ADD THIS LINE
 
 // 3. subscription-required routes
 app.use('/api/export', requireAuth, requireSubscription, exportRouter);

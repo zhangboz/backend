@@ -6,3 +6,4 @@ temp_exports
 hwai-agent-dd5248affc71.json
 homework-help-ai-backend.env
 FileProcessor/gcs_storage_key.json
+secrets

@@ -112,3 +112,6 @@ def process_file_upload(cloud_event):
             "error": error_msg,
             "error_type": "function_error"
         }
+    
+
+    

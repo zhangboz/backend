@@ -10,12 +10,12 @@ import {
 import { text } from 'stream/consumers';
 
 // --- Configuration for the Agent ---
-const PROJECT_ID = 'hwai-agent';
+const PROJECT_ID = process.env.GCP_PROJECT_ID;
 const LOCATION = 'us-central1';
 // MODIFICATION: Define agent IDs for different languages and features
-const AGENT_ID_ENGLISH = '4439889525610643456';
-const AGENT_ID_CHINESE = '2598550596713709568';
-const AGENT_ID_HANDWRITTEN = '1457503817686843392'; // <-- NEW AGENT ID
+const AGENT_ID_ENGLISH = process.env.AGENT_ID_ENGLISH;
+const AGENT_ID_CHINESE = process.env.AGENT_ID_CHINESE;
+const AGENT_ID_HANDWRITTEN = process.env.AGENT_ID_HANDWRITTEN;
 
 // MODIFICATION: Function now accepts a language parameter
 async function imageUnderstand(filePath, mimeType, userId, language = 'en') {

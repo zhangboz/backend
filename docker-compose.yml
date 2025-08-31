@@ -1,0 +1,85 @@
+# backend/docker-compose.yml
+version: '3.8'
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: always
+    environment:
+      # These are read from your .env file
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "${DB_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: "redis:alpine"
+    restart: always
+    # No ports needed unless you want to connect from your PC directly to Redis
+
+  backend:
+    # Build context is '.', meaning the current 'backend' directory.
+    # This assumes your Dockerfile is also in the 'backend' folder.
+    build: .
+    command: npm start
+    ports:
+      - "5000:5000"
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS}
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID}   # <-- ADD THIS
+      GCP_REGION: ${GCP_REGION}         # <-- ADD THIS
+      # Add the other OAuth variables just in case
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      # Also pass the worker's variables
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME}
+      GCS_KEYFILE_PATH: ${GCS_KEYFILE_PATH}
+      REDIS_URL: ${REDIS_URL}
+      DB_HOST: db
+      REDIS_HOST: redis
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./secrets:/etc/secrets:ro 
+      - .:/usr/src/app
+      - /usr/src/app/node_modules
+  worker:
+    build: .
+    command: npm run start:worker
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME}
+      DB_HOST: db
+      REDIS_URL: ${REDIS_URL}
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./secrets:/etc/secrets:ro
+      - .:/usr/src/app
+      - /usr/src/app/node_modules
+volumes:
+  postgres_data:
+
+
+  ## To build:
+  # docker-compose up --build --force-recreate
+  ## to see what's in the database, run:
+  # docker-compose exec db psql -U postgres -d homeworkhelpai
+  # \pset pager on (press q to exit)
