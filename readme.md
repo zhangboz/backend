@@ -119,10 +119,6 @@ To interact with your PostgreSQL database using `psql`, run the following comman
 docker-compose exec db psql -U postgres -d homeworkhelpai
 ```
 
-To access the online database on Render.
-```powershell
-psql -d "REMOVED_EXPOSED_OLD_RENDER_URL"   
-```
 
 ### 3. Other Useful Docker Commands
 
