@@ -51,11 +51,11 @@ async function runAuthFinalTest() {
     try {
       const ai = new GoogleGenAI({
         vertexai: true,
-        project: 'hwai-agent',
+        project: process.env.GCP_PROJECT_ID,
         location: 'us-central1'
       });
       const req = {
-        model: "gemini-2.5-flash",
+        model: "gemini-2.0-flash",
         contents: [
           { role: 'user',
             parts: [{ 
