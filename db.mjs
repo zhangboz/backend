@@ -8,9 +8,9 @@ let dbConfig;
 if (process.env.DATABASE_URL) {
   dbConfig = {
     connectionString: process.env.DATABASE_URL,
-    ssl: {
-      rejectUnauthorized: false
-    }
+    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: true } : false,
+    connectionTimeoutMillis: 5000,
+    statement_timeout: 15000,
   };
   console.log('[DB] Connecting to database using DATABASE_URL.');
 } else {
@@ -20,6 +20,8 @@ if (process.env.DATABASE_URL) {
     database: process.env.DB_NAME,
     password: process.env.DB_PASSWORD,
     port: process.env.DB_PORT,
+    connectionTimeoutMillis: 5000,
+    statement_timeout: 15000,
   };
   console.log(`[DB] Connecting to local database: ${process.env.DB_NAME}`);
 }
@@ -31,12 +33,12 @@ pool.on('connect', () => {
 });
 
 pool.on('error', (err) => {
-  console.error('[DB] Unexpected error on idle client', err);
-  process.exit(-1); // Exit process if a fatal database error occurs
+  console.error('[DB] Idle connection error:', err.code || 'connection_error');
 });
 
 export default {
   query: (text, params) => pool.query(text, params),
   // NEW: Method to get a client for transactions
   getClient: () => pool.connect(),
+  end: () => pool.end(),
 };

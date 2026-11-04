@@ -1,5 +1,5 @@
-# Use the Node.js 20 base image
-FROM node:20-bookworm
+# Use the Node.js 24 LTS base image
+FROM node:24-bookworm
 
 # Set the working directory
 WORKDIR /usr/src/app
@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-fonts-extra \
     texlive-xetex \
     lmodern \
+    fonts-noto-cjk \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -37,4 +38,4 @@ COPY . .
 EXPOSE 5000
 
 # Define the command to start the worker
-CMD [ "npm", "run", "start:worker" ]
+CMD [ "npm", "start" ]

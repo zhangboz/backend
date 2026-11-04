@@ -1,140 +1,88 @@
-// backend/server.mjs
-import 'dotenv/config'; // Must be first
+import './config.mjs';
 import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
-import fs from 'fs-extra'; // Using fs-extra for ensureDirSync
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import multer from 'multer'; // Import multer for using MulterError in global error handler
-import passport from 'passport'; // <-- Import Passport
-import session from 'express-session'; // <-- Import express-session
+import multer from 'multer';
+import passport from 'passport';
+import { createOAuthSession, OAUTH_SESSION_PATH } from './services/oauthSession.mjs';
+import { trustProxyHops } from './services/runtimeConfig.mjs';
 import { requireAuth, requireSubscription, requireAdmin } from './middleware/auth.mjs';
-import { verifyWebhookSecret } from './middleware/webhookAuth.mjs'; // <-- NEW: Import webhook auth middleware
-
-// --- Import Routers ---
 import loginRouter from './routes/loginRouter.mjs';
 import createProcessHomeworkRouter from './routes/processHomeworkRouter.mjs';
-import exportRouter from './routes/exportRouter.mjs';
+import exportRouter, { downloadRouter } from './routes/exportRouter.mjs';
 import speechRouter from './routes/speechRouter.mjs';
 import webhookRouter from './routes/webhookRouter.mjs';
 import paymentRouter from './routes/paymentRouter.mjs';
 import userStatusRouter from './routes/userStatusRouter.mjs';
-import gcsWebhookRouter from './routes/gcsWebhook.mjs'; // <-- IMPORT the new GCS webhook router
-import adminRouter from './routes/adminRouter.mjs'; // <-- IMPORT the new admin router
-// --- Calculate __dirname equivalent in ESM ---
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import adminRouter from './routes/adminRouter.mjs';
+import db from './db.mjs';
+import { getExportQueue, closeExportQueue } from './FileProcessor/queue.mjs';
 
-// --- Ensure upload and temp_exports directories exist ---
-const uploadDir = path.join(__dirname, 'uploads');
-fs.ensureDirSync(uploadDir);
-console.log(`[Server] Upload directory ensured at: ${uploadDir}`);
-
-const tempExportDir = path.join(__dirname, 'temp_exports'); // Directory for Pandoc outputs
-fs.ensureDirSync(tempExportDir);
-console.log(`[Server] Temporary export directory ensured at: ${tempExportDir}`);
-
-// --- Express App Setup ---
-const app = express();
-const port = process.env.PORT || 5000;
-
-// --- Core Middleware ---
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000', // Be specific in production
-  credentials: true
-}));
-app.set('trust proxy', 1); // Trust proxy for Render's HTTPS redirection
-
-// Raw body parser for Stripe webhook - specific path
-app.use('/api/payment/webhook', express.raw({type: 'application/json'}), webhookRouter);
-
-// General JSON and URL-encoded body parsers - apply to all other paths
-// Make sure these are AFTER any specific raw body parsers if paths overlap or you need raw for specific routes
-app.use(express.json({ limit: '50mb' })); // Allow larger JSON payloads for markdown
-app.use(express.urlencoded({ extended: true, limit: '50mb' })); // For form data
-
-// --- Session and Passport Middleware (NEEDS TO BE BEFORE ROUTES) ---
-app.use(session({
-    secret: process.env.SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false, // Don't create session until something stored
-    cookie: {
-      // secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
-      // httpOnly: true,
-      // sameSite: 'lax'
-    }
-}));
+const uploadDir = fileURLToPath(new URL('./uploads', import.meta.url));
+fs.mkdirSync(uploadDir, { recursive: true });
+const bounded = (promise) => {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Dependency timeout')), 2500);
+  })]).finally(() => clearTimeout(timer));
+};
+export const app = express();
+app.disable('x-powered-by');
+app.set('trust proxy', trustProxyHops());
+app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:3000', credentials: true }));
+app.use('/api/payment/webhook', express.raw({ type: 'application/json', limit: '1mb' }), webhookRouter);
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: false, limit: '2mb' }));
+const oauthSession = createOAuthSession();
+app.use(OAUTH_SESSION_PATH, oauthSession.middleware);
 app.use(passport.initialize());
-app.use(passport.session());
-
-
-// --- Static File Serving for Exports with Download Force ---
-app.use('/api/exports', (req, res, next) => {
-    const filename = path.basename(req.path);
-    if (filename && filename !== '.' && filename !== '/') {
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    }
-    next();
+app.get('/api/health', async (_req, res) => {
+  const checks = await Promise.allSettled([
+    bounded(db.query('SELECT 1')),
+    bounded(getExportQueue().then(async queue => (await queue.client).ping())),
+    bounded(getExportQueue().then(queue => queue.getWorkers())),
+    bounded(oauthSession.healthy()),
+  ]);
+  const dependencies = {
+    database: checks[0].status === 'fulfilled', redis: checks[1].status === 'fulfilled',
+    exportWorker: checks[2].status === 'fulfilled' && checks[2].value.length > 0,
+    sessionStore: checks[3].status === 'fulfilled' && checks[3].value === true,
+  };
+  const healthy = Object.values(dependencies).every(Boolean);
+  res.status(healthy ? 200 : 503).json({ healthy, dependencies });
 });
-app.use('/api/exports', express.static(tempExportDir));
-
-
-// --- Mount Routers ---
-// 1. public routes
 app.use('/api/login', loginRouter);
-// NEW: Apply webhookAuth middleware to protect the GCS webhook endpoint
-app.use('/api/gcs-webhook', verifyWebhookSecret, gcsWebhookRouter); // <-- ADD THE NEW ROUTE HERE WITH AUTH
-const processHomeworkRouter = createProcessHomeworkRouter(uploadDir);
-app.use('/api/process-homework', processHomeworkRouter); // PUBLIC ROUTE
-
-// 2. authenticated routes
+app.use('/api/process-homework', createProcessHomeworkRouter(uploadDir));
+app.all('/api/gcs-webhook', (_req, res) => res.status(410).json({ message: 'Textbook cloud processing is paused.' }));
+app.use('/api/export/download', downloadRouter);
 app.use('/api/payment', requireAuth, paymentRouter);
-// MODIFICATION: Mount the user router at /api/user to handle multiple user-related endpoints
 app.use('/api/user', requireAuth, userStatusRouter);
-app.use('/api/admin', requireAuth, requireAdmin, adminRouter); // <-- ADD THIS LINE
-
-// 3. subscription-required routes
+app.use('/api/admin', requireAuth, requireAdmin, adminRouter);
 app.use('/api/export', requireAuth, requireSubscription, exportRouter);
 app.use('/api/speech', requireAuth, requireSubscription, speechRouter);
-
-
-// --- Global Error Handler (Place AFTER all routes and middleware) ---
-app.use((err, req, res, next) => {
-    console.error("[Global Error Handler] Caught an error:", err.message);
-    if (err.stack) {
-        console.error(err.stack);
-    }
-    if (err.detailsForLog) {
-        console.error("[Global Error Handler] Additional error details:", err.detailsForLog);
-    }
-
-    if (err instanceof multer.MulterError) {
-      console.error("Multer error details:", err.code);
-      let message = `文件上传错误: ${err.code}`;
-      if (err.code === 'LIMIT_FILE_SIZE') {
-        message = '文件过大，请上传小于 10MB 的图片。';
-      } else if (err.code === 'LIMIT_UNEXPECTED_FILE') {
-        message = '上传字段名不匹配或文件过多。';
-      }
-      return res.status(400).json({ success: false, message: message });
-    } else if (err && err.message === '仅支持上传图片或 PDF 文件!') {
-       console.error("File type error (from customFileFilter):", err.message);
-       return res.status(400).json({ success: false, message: err.message });
-    } else if (res.headersSent) {
-        console.log("[Global Error Handler] Headers already sent, delegating to Express default.");
-        return next(err);
-    }
-    else if (err) {
-       const statusCode = err.statusCode || 500;
-       return res.status(statusCode).json({ success: false, message: err.message || '服务器内部错误' });
-    }
-
-    if (!res.headersSent) {
-      res.status(500).json({ success: false, message: '服务器发生未知错误' });
-    }
+app.use((err, _req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err instanceof multer.MulterError) return res.status(400).json({ success: false,
+    message: err.code === 'LIMIT_FILE_SIZE' ? 'Please upload an image or PDF smaller than 10 MB.' : 'Invalid upload field or too many files.' });
+  const status = err.statusCode || err.status || 500;
+  console.error(JSON.stringify({ event: 'request_error', status, code: err.code || 'request_failed' }));
+  res.status(status).json({ success: false, code: err.code || 'REQUEST_FAILED', message: status < 500 || err.expose
+    ? err.message : 'The request could not be completed. Please try again.' });
 });
-
-// --- Start Server ---
-app.listen(port, () => {
-  console.log(`Backend server started and listening on port ${port}`);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is required in backend/.env.');
+  const host = process.env.HOST || '127.0.0.1';
+  const port = Number(process.env.PORT || 5000);
+  const server = app.listen(port, host, () => console.log(`Backend listening at http://${host}:${port}`));
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, async () => {
+    await new Promise(resolve => {
+      const timer = setTimeout(() => { server.closeAllConnections(); resolve(); }, 10000);
+      server.close(() => { clearTimeout(timer); resolve(); });
+      server.closeIdleConnections();
+    });
+    await Promise.allSettled([db.end(), closeExportQueue(), oauthSession.close()]);
+    process.exit(0);
+  });
+}

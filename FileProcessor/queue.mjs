@@ -1,29 +1,72 @@
-// backend/queue.mjs (NEW FILE)
 import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
+import { exportConcurrency } from '../services/runtimeConfig.mjs';
 
-// This creates a Redis connection. BullMQ will reuse this.
-// It automatically uses the REDIS_URL from your environment variables,
-// which Render will provide.
-const connection = new IORedis(process.env.REDIS_URL, {
-  maxRetriesPerRequest: null // Important for robustness
-});
+const queueName = 'file-export-queue';
+let queue;
+let apiConnection;
 
-// Create a queue for file export tasks.
-// We'll interact with this queue from our API server and our workers.
-export const exportQueue = new Queue('file-export-queue', { connection });
+function redisConnection(worker = false) {
+  const connection = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
+    maxRetriesPerRequest: worker ? null : 1,
+    connectTimeout: 3000,
+    enableOfflineQueue: worker,
+    retryStrategy: (attempt) => Math.min(attempt * 250, 2000),
+  });
+  // Do not log Redis URLs, which can contain credentials.
+  connection.on('error', () => {});
+  return connection;
+}
 
-// A helper function to create a worker.
-// We'll call this from our worker.mjs file.
-export const createExportWorker = (processor) => {
-    // The worker processes jobs from the 'file-export-queue'.
-    // The { concurrency: 2 } option means this single worker process
-    // can handle up to 2 jobs at the same time.
-    // Let's start with 1 for simplicity and predictability. You can increase this later.
-    return new Worker('file-export-queue', processor, {
-        connection,
-        concurrency: 2 // Each worker server will process ONE job at a time.
+/** Lazily connect so unavailable Redis does not prevent the rest of the API starting. */
+export async function getExportQueue() {
+  if (!queue) {
+    apiConnection = redisConnection();
+    queue = new Queue(queueName, {
+      connection: apiConnection,
+      defaultJobOptions: {
+        attempts: 1,
+        removeOnComplete: { age: 3600, count: 1000 },
+        removeOnFail: { age: 3600, count: 1000 },
+      },
     });
-};
+    queue.on('error', () => {});
+  }
+  const candidate = queue;
+  const candidateConnection = apiConnection;
+  let timer;
+  try {
+    await Promise.race([
+      candidate.waitUntilReady(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Export queue unavailable. Start local Redis.')), 5000);
+      }),
+    ]);
+    if (candidateConnection.status !== 'ready') throw new Error('Redis disconnected.');
+    return candidate;
+  } catch {
+    if (queue === candidate) {
+      queue = undefined;
+      apiConnection = undefined;
+      candidateConnection.disconnect();
+      await candidate.close().catch(() => {});
+    }
+    throw Object.assign(new Error('Export queue unavailable. Start local Redis and the export worker.'), { statusCode: 503 });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-console.log('[Queue] BullMQ configured and exportQueue created.');
+export function createExportWorker(processor) {
+  const connection = redisConnection(true);
+  const worker = new Worker(queueName, processor, { connection, concurrency: exportConcurrency() });
+  worker.on('closed', () => connection.disconnect());
+  return worker;
+}
+
+export async function closeExportQueue() {
+  if (queue) await queue.close();
+  apiConnection?.disconnect();
+  queue = undefined;
+  apiConnection = undefined;
+}

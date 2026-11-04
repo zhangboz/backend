@@ -1,0 +1,17 @@
+name: homework-help-local
+services:
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, 'yes']
+    ports:
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - local_redis:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+volumes:
+  local_redis:

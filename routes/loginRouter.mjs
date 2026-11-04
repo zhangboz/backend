@@ -12,11 +12,13 @@ const router = express.Router();
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 // ===== PASSPORT CONFIGURATION (Find or Create User) =====
 
-passport.use(new GoogleStrategy({
+const googleConfigured = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+if (googleConfigured) passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: '/api/login/auth/google/callback', // Must match Google Console setting
-    scope: ['profile', 'email']
+    callbackURL: `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/login/auth/google/callback`, // Must match Google Console setting
+    scope: ['profile', 'email'],
+    state: true // Bind the OAuth callback to this browser's short-lived session.
   },
   async (accessToken, refreshToken, profile, done) => {
     try {
@@ -203,10 +205,11 @@ router.post('/login', async (req, res, next) => {
 // --- 3. Google OAuth Routes ---
 
 // The route that initiates the Google authentication flow
-router.get('/auth/google', passport.authenticate('google'));
+const requireGoogle = (_req, res, next) => googleConfigured ? next() : res.status(503).json({ message: 'Google login is not configured. Please use email login.' });
+router.get('/auth/google', requireGoogle, passport.authenticate('google', { session: false }));
 
 // The callback route that Google redirects to after the user authorizes
-router.get('/auth/google/callback',
+router.get('/auth/google/callback', requireGoogle,
   passport.authenticate('google', {
     failureRedirect: `${FRONTEND_URL}/login?error=google_failed`, // Redirect on failure
     session: false // We are not using server sessions for the final auth, but JWT

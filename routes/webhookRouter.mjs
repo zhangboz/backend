@@ -1,111 +1,83 @@
 import express from 'express';
-import Stripe from 'stripe';
 import db from '../db.mjs';
+import { assertStripeMode, getStripeClient, hasSubscriptionAccess, paymentError,
+  retrieveOwnedSubscription, stripeId, stripeTestOnly, subscriptionValues, updateSubscription } from '../services/stripeService.mjs';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-const router = express.Router();
+const pendingSubscriptions = new Map();
 
-router.post('/', async (req, res, next) => {
-    const sig = req.headers['stripe-signature'];
+// The local backend has one process. Serialize each subscription's fetch/write
+// pair so overlapping deliveries cannot apply an earlier snapshot last.
+export function reconcileStripeEvent(event, dependencies) {
+  const object = event.data?.object;
+  const key = event.type === 'checkout.session.completed' ? stripeId(object?.subscription) : object?.id;
+  const previous = pendingSubscriptions.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(() => reconcileStripeEventOnce(event, dependencies));
+  pendingSubscriptions.set(key, current);
+  return current.finally(() => {
+    if (pendingSubscriptions.get(key) === current) pendingSubscriptions.delete(key);
+  });
+}
+
+async function reconcileStripeEventOnce(event, { stripe, database, testOnly = true }) {
+  assertStripeMode(event, testOnly);
+  if (!['checkout.session.completed', 'customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted'].includes(event.type)) return;
+  const object = event.data.object;
+  const subscriptionId = event.type === 'checkout.session.completed' ? stripeId(object.subscription) : object.id;
+  if (!subscriptionId) throw paymentError('Webhook has no subscription ID.', 400);
+  // Retrieve current state so delayed events cannot restore obsolete status.
+  const subscription = assertStripeMode(await stripe.subscriptions.retrieve(subscriptionId), testOnly);
+  const values = subscriptionValues(subscription);
+  const userId = subscription.metadata?.user_id ||
+    (event.type === 'checkout.session.completed' ? object.client_reference_id : null);
+  const isCheckout = event.type === 'checkout.session.completed';
+  const isOwnedCreation = event.type === 'customer.subscription.created' &&
+    subscription.metadata?.app === 'homework-help-ai' && userId;
+  if (!isCheckout && !isOwnedCreation) {
+    await updateSubscription(database, subscription);
+    return;
+  }
+  if (!/^\d+$/.test(String(userId)) ||
+      (isCheckout && object.client_reference_id && String(object.client_reference_id) !== String(userId)) ||
+      (isCheckout && stripeId(object.customer) !== values[0])) throw paymentError('Webhook subscription ownership could not be verified.', 400);
+  const existing = (await database.query(
+    'SELECT stripe_subscription_id, stripe_customer_id, subscription_status FROM subscriptions WHERE user_id = $1', [userId])).rows[0];
+  if (existing && existing.stripe_subscription_id !== subscription.id) {
+    // Never overwrite a historical live record or a newer subscription.
+    const old = await retrieveOwnedSubscription(stripe, existing, userId, testOnly);
+    if (old.created >= subscription.created || hasSubscriptionAccess(old.status)) return;
+    if (stripeId(old.customer) !== values[0]) throw paymentError('A different customer is already linked to this account.');
+  }
+  await database.query(`INSERT INTO subscriptions (user_id, stripe_customer_id, stripe_subscription_id,
+    stripe_price_id, subscription_status, current_period_end, cancel_at_period_end)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    ON CONFLICT (user_id) DO UPDATE SET
+      stripe_customer_id = EXCLUDED.stripe_customer_id, stripe_subscription_id = EXCLUDED.stripe_subscription_id,
+      stripe_price_id = EXCLUDED.stripe_price_id, subscription_status = EXCLUDED.subscription_status,
+      current_period_end = EXCLUDED.current_period_end, cancel_at_period_end = EXCLUDED.cancel_at_period_end,
+      updated_at = NOW()
+    WHERE subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id
+       OR (subscriptions.stripe_customer_id = EXCLUDED.stripe_customer_id
+           AND subscriptions.subscription_status NOT IN ('active', 'trialing'))`, [userId, ...values]);
+}
+
+export function createWebhookRouter({ database = db, getStripe = getStripeClient,
+  testOnly = stripeTestOnly, webhookSecret = () => process.env.STRIPE_WEBHOOK_SECRET } = {}) {
+  const router = express.Router();
+  router.post('/', async (req, res, next) => {
     let event;
-
+    let stripe;
     try {
-        event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    } catch (err) {
-        console.error(`❌ Webhook signature verification failed: ${err.message}`);
-        return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-
+      stripe = getStripe();
+      if (!webhookSecret()) throw paymentError('Local Stripe webhook secret is not configured.', 503);
+    } catch (error) { return next(error); }
+    try { event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], webhookSecret()); }
+    catch { return res.status(400).json({ message: 'Invalid Stripe webhook signature.' }); }
     try {
-        switch (event.type) {
-            case 'checkout.session.completed': {
-                const session = event.data.object;
-                let userId;
+      await reconcileStripeEvent(event, { stripe, database, testOnly: testOnly() });
+      res.json({ received: true });
+    } catch (error) { next(error); }
+  });
+  return router;
+}
 
-                // --- THIS IS THE FIX ---
-                // Determine the user ID based on whether it's a new or returning customer.
-                if (session.client_reference_id) {
-                    // Flow for a brand new customer
-                    userId = session.client_reference_id;
-                    console.log(`[Webhook] New customer subscribed. User ID from client_reference_id: ${userId}`);
-                } else {
-                    // Flow for a returning customer
-                    const stripeCustomerId = session.customer;
-                    if (!stripeCustomerId) {
-                        throw new Error('Webhook Error: checkout.session.completed did not have customer or client_reference_id.');
-                    }
-                    console.log(`[Webhook] Returning customer subscribed. Looking up user for Stripe Customer ID: ${stripeCustomerId}`);
-                    
-                    // Find our internal user_id from the stripe_customer_id
-                    const userResult = await db.query(
-                        'SELECT user_id FROM subscriptions WHERE stripe_customer_id = $1',
-                        [stripeCustomerId]
-                    );
-                    if (userResult.rows.length === 0) {
-                        throw new Error(`Webhook Error: Could not find user for returning customer ${stripeCustomerId}`);
-                    }
-                    userId = userResult.rows[0].user_id;
-                }
-                
-                // Now that we have a guaranteed valid userId, the rest of the logic works perfectly.
-                const subscription = await stripe.subscriptions.retrieve(session.subscription);
-                const periodEndValue = subscription.items.data[0]?.current_period_end;
-
-                await db.query(`
-                    INSERT INTO subscriptions (user_id, stripe_customer_id, stripe_subscription_id, stripe_price_id, subscription_status, current_period_end, cancel_at_period_end)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        stripe_customer_id = EXCLUDED.stripe_customer_id,
-                        stripe_subscription_id = EXCLUDED.stripe_subscription_id,
-                        stripe_price_id = EXCLUDED.stripe_price_id,
-                        subscription_status = EXCLUDED.subscription_status,
-                        current_period_end = EXCLUDED.current_period_end,
-                        cancel_at_period_end = EXCLUDED.cancel_at_period_end;
-                `, [
-                    userId,
-                    subscription.customer,
-                    subscription.id,
-                    subscription.items.data[0].price.id,
-                    subscription.status,
-                    periodEndValue ? new Date(periodEndValue * 1000) : null,
-                    subscription.cancel_at_period_end
-                ]);
-                console.log(`[Webhook] Processed '${event.type}' for user_id: ${userId}.`);
-                break;
-            }
-
-            case 'customer.subscription.updated':
-            case 'customer.subscription.deleted': {
-                const subscription = await stripe.subscriptions.retrieve(event.data.object.id);
-                const userResult = await db.query('SELECT user_id FROM subscriptions WHERE stripe_customer_id = $1', [subscription.customer]);
-                
-                if (userResult.rows.length > 0) {
-                    const userId = userResult.rows[0].user_id;
-                    const periodEndValue = subscription.items.data[0]?.current_period_end;
-                    await db.query(`
-                        UPDATE subscriptions SET
-                            subscription_status = $1,
-                            current_period_end = $2,
-                            cancel_at_period_end = $3
-                        WHERE user_id = $4
-                    `, [
-                        subscription.status,
-                        periodEndValue ? new Date(periodEndValue * 1000) : null,
-                        subscription.cancel_at_period_end,
-                        userId
-                    ]);
-                    console.log(`[Webhook] Processed '${event.type}' for user_id: ${userId}. Status: ${subscription.status}, Cancel at end: ${subscription.cancel_at_period_end}`);
-                }
-                break;
-            }
-        }
-    } catch (dbError) {
-        console.error(`[Webhook] Error processing event ${event.type}:`, dbError);
-        // Let the global error handler manage the response, but return to stop execution
-        return next(dbError);
-    }
-
-    res.status(200).send({ received: true });
-});
-
-export default router;
+export default createWebhookRouter();

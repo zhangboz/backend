@@ -36,13 +36,13 @@ export const requireSubscription = async (req, res, next) => {
 
   try {
     const subResult = await db.query(
-      "SELECT subscription_status FROM subscriptions WHERE user_id = $1 AND subscription_status = 'active'",
+      "SELECT subscription_status FROM subscriptions WHERE user_id = $1 AND subscription_status IN ('active', 'trialing') AND current_period_end > NOW()",
       [req.user.user_id]
     );
 
     if (subResult.rows.length === 0) {
       // User has no active subscription
-      return res.status(403).json({ message: 'An active subscription is required for this feature.' });
+      return res.status(403).json({ message: 'An active subscription or trial is required for this feature.' });
     }
 
     // User is authenticated and has an active subscription, proceed.

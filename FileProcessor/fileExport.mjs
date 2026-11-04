@@ -1,119 +1,158 @@
-// backend/FileProcessor/fileExport.mjs
-import { spawn } from 'child_process';
+import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
-import fs from 'fs-extra'; // Using fs-extra for ensureDirSync
+import os from 'node:os';
+import fs from 'node:fs/promises';
+import { constants, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import crypto from 'node:crypto'; // For generating unique filenames
+import { getExportDir } from './localExports.mjs';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+export const MAX_MARKDOWN_BYTES = 1024 * 1024;
+// OpenAI commonly writes \( ... \) and \[ ... \] math. Pandoc's default
+// Markdown reader only enables dollar delimiters, so enable this native parser
+// extension rather than rewriting source text (which would damage code blocks).
+export const MARKDOWN_READER = 'markdown+tex_math_single_backslash';
 
-// Ensure a temporary directory for exported files exists
-const tempExportDir = process.env.EXPORT_DIR || path.join(__dirname, '..', 'temp_exports');
-fs.ensureDirSync(tempExportDir);
-console.log(`[FileExport] Temporary export directory ensured at: ${tempExportDir}`);
-/**
- * Converts Markdown text to a specified file format using Pandoc.
- * @param {string} markdownText The Markdown content to convert.
- * @param {string} targetFormat The desired output format (e.g., 'docx', 'pdf').
- * @returns {Promise<string>} A promise that resolves with the full path to the generated file.
- * @throws {Error} If Pandoc conversion fails or an unsupported format is requested.
- */
-export async function exportMarkdown(markdownText, targetFormat) {
-    console.log(`[FileExport] Attempting to convert markdown to ${targetFormat}`);
-    const sanitizedMarkdown = markdownText.replace(/\|\|/g, '\n');
-
-    const ext = `.${targetFormat}`;
-    const uniqueId = crypto.randomBytes(8).toString('hex');
-    const outputFileName = `export-${Date.now()}-${uniqueId}${ext}`;
-    const outputFilePath = path.join(tempExportDir, outputFileName);
-
-    const referenceDocPath = path.join(__dirname, 'reference.docx'); // Path to your template
-
-    return new Promise((resolve, reject) => {
-        const pandocArgs = [
-            '-f', 'markdown',
-            '-t', targetFormat,
-            '--mathml',
-            '-o', outputFilePath,
-            '-' // Read from stdin
-        ];
-
-        // Add format-specific arguments
-        if (targetFormat === 'docx') {
-            // Check if reference doc exists before adding the argument
-            if (fs.existsSync(referenceDocPath)) {
-                 pandocArgs.splice(4, 0, '--reference-doc', referenceDocPath);
-                 console.log(`[FileExport] Using reference document: ${referenceDocPath}`);
-            } else {
-                 console.warn(`[FileExport] Warning: reference.docx not found at ${referenceDocPath}. Using Pandoc defaults.`);
-            }
-        } else if (targetFormat === 'pdf') {
-            // Using xelatex is a good default for unicode characters
-            pandocArgs.splice(4, 0, '--pdf-engine=xelatex');
-            // This tells pandoc to use a variable for colored code blocks,
-            // which requires the xcolor latex package.
-            pandocArgs.push('-V', 'colorlinks');
-        }
-
-        console.log(`[FileExport] Pandoc args: ${pandocArgs.join(' ')}`);
-        const pandocProcess = spawn('pandoc', pandocArgs);
-
-        let processError = '';
-        let processOutput = '';
-
-        pandocProcess.stdin.write(sanitizedMarkdown);
-        pandocProcess.stdin.end();
-
-        pandocProcess.stdout.on('data', (data) => {
-            processOutput += data.toString();
-        });
-
-        pandocProcess.stderr.on('data', (data) => {
-            processError += data.toString();
-        });
-
-        pandocProcess.on('close', (code) => {
-            if (processOutput) console.log(`[FileExport] Pandoc stdout: ${processOutput}`);
-            if (processError) console.error(`[FileExport] Pandoc stderr: ${processError}`);
-
-            if (code === 0) {
-                console.log(`[FileExport] Conversion to ${targetFormat} successful. File saved at: ${outputFilePath}`);
-                resolve(outputFilePath);
-            } else {
-                console.error(`[FileExport] Pandoc process exited with code ${code}.`);
-                let errorMessage = `Pandoc conversion failed (exit code ${code}).`;
-                if (processError.toLowerCase().includes("pdflatex not found") || processError.toLowerCase().includes("latexmk not found") || processError.toLowerCase().includes("xelatex not found")) {
-                    errorMessage += " PDF generation requires a LaTeX distribution (like MiKTeX for Windows, or TeX Live for Linux/macOS) to be installed and in the system PATH.";
-                } else if (processError) {
-                    errorMessage += ` Details: ${processError.substring(0, 500)}`; // Limit error length
-                }
-                // Attempt to clean up if a partial/corrupt file was created
-                fs.unlink(outputFilePath).catch(err => console.warn(`[FileExport] Failed to delete potentially corrupt output file: ${outputFilePath}`, err));
-                reject(new Error(errorMessage));
-            }
-        });
-
-        pandocProcess.on('error', (err) => {
-            console.error('[FileExport] Failed to start Pandoc process:', err);
-            let detail = "";
-            if (err.code === 'ENOENT') {
-                detail = " This usually means the 'pandoc' command was not found. Ensure Pandoc is installed and its directory is in your system's PATH.";
-            }
-            reject(new Error(`Failed to start Pandoc process. ${detail}`));
-        });
-    });
+function conversionError(code, message, exitCode) {
+  return Object.assign(new Error(message), { code,
+    ...(Number.isInteger(exitCode) ? { exitCode } : {}),
+  });
 }
 
-/**
- * Schedules a file for deletion after a specified timeout.
- * @param {string} filePath Full path to the file.
- * @param {number} delayMilliseconds Delay in milliseconds before deletion.
- */
-export function scheduleFileDeletion(filePath, delayMilliseconds = 5 * 60 * 1000) { // Default 5 minutes
-    setTimeout(() => {
-        fs.unlink(filePath)
-            .then(() => console.log(`[FileExport] Successfully deleted temporary file: ${filePath}`))
-            .catch(err => console.error(`[FileExport] Error deleting temporary file ${filePath}:`, err));
-    }, delayMilliseconds);
+function classifyConversionFailure(stderr, exitCode) {
+  if (stderr.includes('EXPORT_EXTERNAL_RESOURCE_BLOCKED')) {
+    return conversionError('EXPORT_EXTERNAL_RESOURCE_BLOCKED', 'Embedded images are not supported in document exports.', exitCode);
+  }
+  if (/xelatex[^\n]*(not found|not recognized)|could not find.*xelatex/i.test(stderr)) {
+    return conversionError('EXPORT_PDF_ENGINE_MISSING', 'PDF conversion requires XeLaTeX on PATH.', exitCode);
+  }
+  if (/font.*cannot be found|font.*not found/i.test(stderr)) {
+    return conversionError('EXPORT_FONT_UNAVAILABLE', 'The configured PDF font is unavailable. Check PDF_CJK_FONT.', exitCode);
+  }
+  if (/Missing \$ inserted|Undefined control sequence|LaTeX Error/i.test(stderr)) {
+    return conversionError('EXPORT_LATEX_SYNTAX', 'PDF conversion could not render the document’s mathematical formatting.', exitCode);
+  }
+  return conversionError('EXPORT_CONVERSION_FAILED', 'Document conversion failed (exit code ' + (exitCode ?? 'unknown') + ').', exitCode);
+}
+
+export function validateExportInput(markdownText, targetFormat) {
+  if (!['docx', 'pdf'].includes(targetFormat)) {
+    throw Object.assign(new Error('Only PDF and Word exports are supported.'), { statusCode: 400 });
+  }
+  if (typeof markdownText !== 'string' || !markdownText.trim()) {
+    throw Object.assign(new Error('Markdown text is required.'), { statusCode: 400 });
+  }
+  if (Buffer.byteLength(markdownText, 'utf8') > MAX_MARKDOWN_BYTES) {
+    throw Object.assign(new Error('Markdown must be no larger than 1 MB.'), { statusCode: 413 });
+  }
+}
+
+function converterEnvironment(workDir) {
+  // Do not pass API keys, database credentials, or caller-controlled TeX search
+  // paths into Pandoc and its children. System executables/fonts remain usable.
+  const environment = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (['path', 'systemroot', 'windir', 'comspec', 'pathext'].includes(key.toLowerCase())) environment[key] = value;
+  }
+  return { ...environment, LANG: 'C.UTF-8', HOME: workDir, USERPROFILE: workDir,
+    APPDATA: workDir, LOCALAPPDATA: workDir, TEMP: workDir, TMP: workDir, TMPDIR: workDir,
+    TEXMFOUTPUT: workDir, TEXMF_OUTPUT_DIRECTORY: workDir,
+    shell_escape: 'f', openout_any: 'p', openin_any: 'p' };
+}
+
+// Pandoc's sandbox excludes the PDF engine. openin_any is only defense in
+// depth for older TeX: TeX Live 2026 ignores it and older versions have bypasses.
+// These settings do NOT provide an OS filesystem sandbox for untrusted TeX;
+// deployment must remain a trusted private preview until that boundary exists.
+/** Convert in a private task directory with no application secrets in children. */
+export async function exportMarkdown(markdownText, targetFormat, options = {}) {
+  validateExportInput(markdownText, targetFormat);
+  const outputDir = options.outputDir || getExportDir();
+  await fs.mkdir(outputDir, { recursive: true });
+  const fileName = 'export-' + Date.now() + '-' + randomBytes(8).toString('hex') + '.' + targetFormat;
+  const outputPath = path.join(outputDir, fileName);
+  const workRoot = path.resolve(os.tmpdir());
+  const workDir = await fs.mkdtemp(path.join(workRoot, 'synapse-export-'));
+  const taskOutput = path.join(workDir, 'document.' + targetFormat);
+  const args = ['--sandbox', '--fail-if-warnings', '-f', MARKDOWN_READER, '-t', targetFormat, '-o', taskOutput, '-'];
+  args.push('--lua-filter', path.join(moduleDir, 'exportSafety.lua'));
+  const referenceDoc = path.join(moduleDir, 'reference.docx');
+  if (targetFormat === 'docx' && existsSync(referenceDoc)) args.push('--reference-doc', referenceDoc);
+  if (targetFormat === 'pdf') {
+    args.push('--pdf-engine=xelatex', '--pdf-engine-opt=-no-shell-escape', '-V', 'colorlinks=true');
+    const cjkFont = options.cjkFont || process.env.PDF_CJK_FONT ||
+      (process.platform === 'win32' ? 'Microsoft YaHei' : 'Noto Sans CJK SC');
+    args.push('-V', 'CJKmainfont=' + cjkFont);
+  }
+  const configuredTimeout = Number(options.timeoutMs ?? process.env.EXPORT_TIMEOUT_MS ?? 90000);
+  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 90000;
+  const spawnProcess = options.spawnProcess || spawn;
+
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawnProcess(options.pandocPath || process.env.PANDOC_PATH || 'pandoc', args, {
+        windowsHide: true, shell: false, stdio: ['pipe', 'ignore', 'pipe'],
+        cwd: workDir, env: converterEnvironment(workDir), detached: process.platform !== 'win32',
+      });
+      let settled = false;
+      let timedOut = false;
+      let stderr = '';
+      let killDeadline;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(killDeadline);
+        error ? reject(error) : resolve();
+      };
+      const timer = setTimeout(() => {
+        timedOut = true;
+        const timeoutError = conversionError('EXPORT_TIMEOUT', 'Document conversion timed out. Please try a shorter document.');
+        // Wait for the process to exit before removing its partial output file.
+        killDeadline = setTimeout(() => finish(timeoutError), 5000);
+        // Pandoc launches XeLaTeX; Windows requires terminating the process tree.
+        if (process.platform === 'win32' && child.pid) {
+          const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+            windowsHide: true, shell: false, stdio: 'ignore',
+          });
+          killer.on('error', () => child.kill('SIGKILL'));
+        } else if (child.pid) {
+          // Pandoc launches XeLaTeX. Terminate their process group together.
+          try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+        } else {
+          child.kill('SIGKILL');
+        }
+      }, timeoutMs);
+      child.stderr?.on('data', (chunk) => {
+        // Never expose raw diagnostics: they can contain private document text.
+        stderr = (stderr + chunk.toString()).slice(-8192);
+      });
+      child.on('error', (error) => {
+        finish(conversionError(error.code === 'ENOENT' ? 'EXPORT_CONVERTER_MISSING' : 'EXPORT_SPAWN_FAILED',
+          error.code === 'ENOENT' ? 'Pandoc is not installed or is not on PATH.' : 'Could not start the document converter.'));
+      });
+      child.on('close', (code) => {
+        if (timedOut) return finish(conversionError('EXPORT_TIMEOUT', 'Document conversion timed out. Please try a shorter document.'));
+        if (code === 0) return finish();
+        finish(classifyConversionFailure(stderr, code));
+      });
+      child.stdin.on('error', (error) => {
+        if (error.code !== 'EPIPE') finish(conversionError('EXPORT_INPUT_FAILED', 'Could not send the document to the converter.'));
+      });
+      // Preserve Markdown exactly, including mathematical norms and logical OR (||).
+      child.stdin.end(markdownText, 'utf8');
+    });
+    const output = await fs.lstat(taskOutput);
+    if (!output.isFile() || output.isSymbolicLink()) throw conversionError('EXPORT_CONVERSION_FAILED', 'Document conversion did not produce a regular file.');
+    // /tmp may be a different filesystem from the shared export volume.
+    await fs.copyFile(taskOutput, outputPath, constants.COPYFILE_EXCL);
+    return outputPath;
+  } finally {
+    const resolved = path.resolve(workDir);
+    if (path.dirname(resolved) !== workRoot || !path.basename(resolved).startsWith('synapse-export-')) {
+      throw new Error('Invalid export temporary directory.');
+    }
+    await fs.rm(resolved, { recursive: true, force: true });
+  }
 }

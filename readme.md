@@ -1,176 +1,76 @@
+# Homework Help AI backend — OpenAI edition
 
-# HomeworkHelpAI - backend
+Express API for homework help, handwriting transcription, speech, authentication, Stripe test subscriptions, and local document exports. This repository is the `backend/` component of [homework-help-ai](https://github.com/zhangboz/homework-help-ai).
 
----
+The parent project and Oracle deployment guide are in a private repository; their links require an authorized GitHub account. This component repository remains independently usable.
 
-## 📖 Project Overview
+## Current status — 2026-11-04
 
-This repository represents a full-stack academic assistance platform designed to process complex student queries (images and text) using Multi-Modal LLM Agents.
+- **OpenAI is the active AI provider.** Gemini, Vertex and Google ADK are retired from the runtime. Original prompts are preserved in `AI_ChatBot/prompts.mjs`.
+- **Local functionality is restored.** PostgreSQL, Redis/BullMQ, PDF/DOCX conversion, email/Google login and Stripe TEST flows have been validated.
+- **Oracle deployment is being tested.** The Linux container configuration has passed local validation, but Phoenix Always Free capacity checks returned `OUT_OF_HOST_CAPACITY`. No Oracle VM has been provisioned; native ARM64 validation and cloud migration remain pending.
+- **The legacy Render system is archived and inactive.** These instructions do not re-enable Render, change the existing domain/DNS, or enable live payments.
+- **GCS textbook upload and cloud transcription are paused.** Historical files and database records are retained. Core homework processing and exports do not require GCS.
 
-Built using an **AI-Assisted Development methodology**, this project moves beyond simple API wrappers. It implements a distributed architecture featuring asynchronous worker queues for heavy computation, a serverless RAG (Retrieval-Augmented Generation) pipeline for textbook ingestion, and a secure payment/subscription infrastructure.
+See the [project setup and status](https://github.com/zhangboz/homework-help-ai/blob/main/README.md) and [Oracle deployment guide](https://github.com/zhangboz/homework-help-ai/blob/main/deploy/oracle/README.md).
 
-**Core Value Proposition:**
-*   **Multi-Agent Reasoning:** Uses a custom Google Vertex AI Agent chain to "Solve" then "Rephrase" answers for TTS (Text-to-Speech) suitability.
-*   **Hybrid Database:** Combines relational data (User/Subscription) with Vector embeddings (Textbooks) in PostgreSQL.
-*   **Scalable Architecture:** Decouples CPU-intensive tasks (document conversion) from the main event loop.
+## Runtime
 
----
+| Feature | Current implementation |
+| --- | --- |
+| Homework answers | Official OpenAI Node SDK and Responses API; `gpt-6.1-terra`, medium reasoning |
+| Spoken explanation text | Second Responses call to `gpt-6.1-terra`, low reasoning |
+| Handwriting transcription | One Responses call to `gpt-6.1-terra`, low reasoning |
+| Speech | `gpt-realtime-2.1-mini` over WebSocket, PCM wrapped as WAV; default voice `marin` |
+| Persistence | PostgreSQL; preserve the existing database and back it up before migration |
+| Export queue | Redis and BullMQ; API and worker share the local export directory |
+| PDF / Word | Pandoc and XeLaTeX with an explicit Chinese font |
+| Authentication / billing | Email confirmation, Google OAuth and JWT; Stripe remains TEST-only |
 
-## 🛠 Tech Stack
+Image and PDF inputs are sent through the OpenAI request flow without GCS. Homework responses retain `{success, reply1, reply2}`; if the explanation step fails, the answer remains available and `reply2` is `null` with a warning. Speech failures do not discard an existing answer.
 
-*   **Backend:** Node.js (ESM), Express.js
-*   **Database:** PostgreSQL (with `pgvector` for RAG), managed via SQL migrations.
-*   **AI & ML:** Google Vertex AI (Reasoning Engine), Gemini 1.5 Pro/Flash, Google GenAI SDK.
-*   **Cloud Infrastructure:** Google Cloud Platform (Cloud Run, Cloud Functions, GCS), Render (Web Services + Redis).
-*   **Queue/Async:** BullMQ (Redis-backed) for job processing.
-*   **Containerization:** Docker (for Pandoc environment).
-*   **Payments & Auth:** Stripe (Webhooks), Passport.js (Google OAuth/JWT).
+Exports use the existing create-job, status and download endpoints. Status checks enforce job ownership; signed download URLs expire after 15 minutes and files are retained for one hour. Dollar and backslash math delimiters are supported. Embedded Markdown images are currently rejected with a retry explanation; text, formulas, tables and code blocks remain supported.
 
----
+## Local setup
 
-## 🏗 System Architecture & Design Decisions
+Use Node 24 LTS, PostgreSQL 16, Docker Desktop (for Redis), Pandoc and XeLaTeX with a Chinese font. For the complete local launcher, keep this checkout at `backend/` beside `web_frontend/` in the main project.
 
-This system was architected to handle long-running processes without blocking the main application thread.
+Configure ignored `.env` and `.env.local` files using [.env.example](.env.example). Keep `OPENAI_API_KEY` and all other secrets in the backend. The restored local database uses `127.0.0.1:3001`; do not start a replacement database or run historical SQL snapshots containing destructive statements.
 
-### 1. The Core Server (`server.mjs`)
-The main entry point handles HTTP traffic, authentication, and orchestrates services.
-*   **Authentication:** Implements a dual-strategy system using `passport-google-oauth20` and local Email/Password with JWT issuance.
-*   **Stripe Integration:** Handles complex subscription lifecycles (Creation, Cancellation, Reactivation) via Webhooks (`webhookRouter.mjs`) to ensure database state always matches payment status.
+Run `npm ci` once in the sibling `web_frontend/` directory, then run the following from `backend/`:
 
-### 2. Agentic AI Workflow (`GoogleAI_Agent.mjs` & `reasoningEngineClient.mjs`)
-Instead of a single API call, the system uses the **Google Agent Development Kit**.
-*   **Logic:** The system creates a session with a specific Agent ID deployed on Vertex AI.
-*   **Chain:** The input image is analyzed for mathematical correctness. The output is then fed into a secondary logic flow to structure it for audio synthesis.
-*   **Why this approach?** It allows for stateful reasoning and separation of concerns (Solving vs. Presenting) compared to a stateless LLM call.
-
-### 3. Distributed Document Conversion (`worker.mjs` & `fileExport.mjs`)
-Converting Markdown to PDF/Docx using **Pandoc** is CPU-intensive and can crash a standard Node.js event loop under load.
-*   **Solution:** I implemented a **Producer-Consumer pattern**. The main server pushes a job to a Redis queue.
-*   **The Worker:** A separate Node process (running in a Docker container with Pandoc binaries installed) picks up the job, performs the conversion, and uploads the result to a dedicated Google Cloud Storage bucket.
-*   **Result:** The main server remains responsive to HTTP requests even while generating heavy documents.
-
-### 4. Serverless RAG Pipeline (`main.py`)
-To enable the AI to answer specific textbook questions, I built a data ingestion pipeline.
-*   **Trigger:** When a textbook PDF is uploaded to a specific GCS Bucket.
-*   **Compute:** A **Google Cloud Function** (Python) triggers automatically.
-*   **Logic:** It parses the PDF, chunks the text, generates Vector Embeddings using the Gemini Embedding model, and prepares them for insertion into the Vector Database.
-*   **Status:** *Note: This feature demonstrates serverless deployment logic, though full-scale indexing of 20+ textbooks is currently paused due to token cost constraints.*
-
----
-
-## 📂 Project Structure Highlights
-
-```bash
-backend/
-├── server.mjs                  # Main Express application entry point
-├── middleware/
-│   ├── auth.mjs                # JWT & Role-based protection
-│   └── webhookAuth.mjs         # Security verification for external hooks
-├── routes/
-│   ├── processHomeworkRouter.mjs # Handles image uploads & Agent orchestration
-│   ├── paymentRouter.mjs       # Stripe Checkout session logic
-│   └── adminRouter.mjs         # Protected admin routes
-├── AI_ChatBot/
-│   ├── GoogleAI_Agent.mjs      # Logic to interface with Vertex AI Agents
-│   └── reasoningEngineClient.mjs # Client for custom Agent sessions
-├── FileProcessor/
-│   └── worker.mjs              # Dedicated worker for Pandoc/Export tasks
-│   └── fileExport.mjs          # Spawns Pandoc child processes
-└── db.mjs                      # Database connection pool
+```powershell
+npm ci
+npm run local:start
+npm run local:check
 ```
 
----
+The launcher runs API, worker and React as native Node processes and starts only Redis in Docker. Open [the web app](http://localhost:3000); the [API health check](http://localhost:5000/api/health) checks its dependencies. Logs are stored under ignored `.local/`.
 
-
-## Local Development Setup
-
-This project uses Docker and Docker Compose to create a consistent, isolated, and production-like development environment. This approach ensures that all services (PostgreSQL with pgvector, Redis, and the Node.js app) run exactly the same on any machine, without interfering with system-level installations.
-
-All commands below should be run from the `backend` directory, where the `docker-compose.yml` file is located.
-
-### 1. Starting All Services
-
-This is your main command to fire everything up. You have a few options:
-
-*   **To start and see all logs in your terminal (recommended for debugging):**
-    ```bash
-    docker-compose up
-    ```
-    This will take over your terminal window. To stop everything, press `Ctrl + C`.
-
-*   **To start services in the background (detached mode):**
-    ```bash
-    docker-compose up -d
-    ```
-    This is useful when you just want the services running so you can work on your code.
-
-*   **To rebuild your app's image after changes:**
-    If you change your `Dockerfile` or install new npm packages (`package.json`), you must tell Docker to rebuild the image.
-    ```bash
-    docker-compose up --build
-    ```
-    *(You can also combine this with detached mode: `docker-compose up -d --build`)*
-
-### 2. Connecting to the Database
-
-To interact with your PostgreSQL database using `psql`, run the following command. This executes `psql` *inside* the running database container.
-
-```bash
-docker-compose exec db psql -U postgres -d homeworkhelpai
+```powershell
+npm run local:backup       # Back up the existing database before changes.
+npm run local:stripe       # Forward TEST webhooks; complete CLI login if required.
+npm run local:restart-api  # Reload the local webhook signing secret after forwarding starts.
+npm run local:stop         # Preserve PostgreSQL and stored data.
 ```
 
+For standalone process management, use `npm start` for the API and `npm run start:worker` for exports after PostgreSQL and Redis are available. Standalone use does not launch the React repository.
 
-### 3. Other Useful Docker Commands
+In local development, configuration loads `.env` followed by `.env.local`. Production and tests skip those files and use their supplied environment. Production OAuth sessions use Redis; set `TRUST_PROXY_HOPS=1` only when the API is reachable exclusively through one trusted reverse proxy. `EXPORT_CONCURRENCY` defaults to 2 locally and 1 in production.
 
-Here are some other essential commands for managing your local environment:
+Google OAuth and Gmail SMTP are independent of the retired Gemini/GCS services. Local Google callback: `http://localhost:5000/api/login/auth/google/callback`. Keep existing callbacks when adding a new deployment callback.
 
-*   **To stop all running services:**
-    (If you started with `docker-compose up -d`)
-    ```bash
-    docker-compose down
-    ```
+Stripe uses a seven-day trial; valid `active` and `trialing` subscriptions grant premium access. Test with a fresh fixture account and a separate test webhook signing secret. Do not reuse historical customers across Stripe environments or enable live billing as part of this restoration.
 
-*   **To stop services AND delete the database data (for a complete reset):**
-    This is useful if you want to start completely fresh.
-    ```bash
-    docker-compose down -v
-    ```
+## Validation and deployment boundary
 
-*   **To view the logs of all running services:**
-    (If you started in detached mode)
-    ```bash
-    docker-compose logs
-    ```
+```powershell
+npm test
+$env:RUN_EXPORT_INTEGRATION='1'
+node --test test/exports.test.mjs
+Remove-Item Env:RUN_EXPORT_INTEGRATION
+```
 
-*   **To follow the logs of a specific service in real-time:**
-    For example, to watch only the backend's logs:
-    ```bash
-    docker-compose logs -f backend
-    ```
+Live smoke scripts require explicit flags and consume API credit or create Stripe TEST fixtures. See the main project guide before running them. Secrets, backups, tokens, uploaded homework and generated reports are excluded from Git and deployment images.
 
-*   **To see the status of your running services:**
-    ```bash
-    docker-compose ps
-    ```
-
-### Typical Local Workflow
-
-1.  **Start of day:** `cd backend` then `docker-compose up -d`.
-2.  **Work on code.** Changes to `.mjs` files are reflected automatically thanks to the volume mount.
-3.  **Need to check the DB:** `docker-compose exec db psql -U postgres -d homeworkhelpai`.
-4.  **Something's wrong?** `docker-compose logs -f backend` to see live error messages.
-5.  **Installed a new npm package?** `docker-compose up -d --build` to rebuild the image with the new package.
-6.  **End of day:** `docker-compose down`.
-7.  **Need to start over from scratch?** `docker-compose down -v`, then `docker-compose up`.
-## Important Reminders
-
-*   **Stripe Webhook is CRITICAL**: The application's subscription logic will not function without the Stripe CLI listener running in development. In production, you must configure a permanent webhook endpoint in your Stripe Dashboard.
-*   **Database as a Replica**: Remember that the `subscriptions` table is a mirror of Stripe's state. If data seems inconsistent, the first place to check is the Stripe Dashboard for that customer, as it is the source of truth.
-
----
-## 🔮 Future Roadmap
-
-*   **Cost Optimization:** Implement caching for repeated queries to reduce Vertex AI token usage.
-*   **Advanced RAG:** Complete the ingestion of the full Statistics textbook library to enable "Open Book" exam capabilities.
-
----
+The Oracle rollout is currently **SSH-only private preview**. Local Linux AMD64 checks do not establish ARM64 compatibility or public production readiness. Pandoc sandboxing and disabled TeX shell escape do not provide complete operating-system isolation for arbitrary TeX; that isolation must be completed and verified before exposing public untrusted-input exports. Cloud HTTPS/OAuth/webhook validation and historical database migration also remain pending.

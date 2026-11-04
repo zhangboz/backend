@@ -1,76 +1,33 @@
-// backend/worker.mjs (MODIFIED FOR GCS)
-import 'dotenv/config';
-import fs from 'fs-extra';
-import path from 'node:path';
+import '../config.mjs';
 import { createExportWorker } from './queue.mjs';
 import { exportMarkdown } from './fileExport.mjs';
+import { completedExport, startExportCleanup } from './localExports.mjs';
 
-// --- NEW IMPORTS FOR GCS ---
-import { bucket } from './gcs_client.mjs'; // Use our new GCS client
-
-console.log('[Worker] Starting up...');
-
-const processor = async (job) => {
-    const { markdownText, targetFormat } = job.data;
-    console.log(`[Worker] Picked up job ${job.id}: Convert to ${targetFormat}.`);
-
-    let localOutputFilePath = null; // Keep track of the local file for cleanup
-
-    try {
-        // 1. Perform the heavy task (generates file on worker's temporary local disk)
-        localOutputFilePath = await exportMarkdown(markdownText, targetFormat);
-        const outputFileName = path.basename(localOutputFilePath);
-
-        if (!bucket) {
-            throw new Error("GCS bucket is not configured. Check environment variables.");
-        }
-
-        // --- NEW: UPLOAD TO GCS ---
-        console.log(`[Worker] Job ${job.id}: Uploading ${outputFileName} to GCS bucket ${bucket.name}...`);
-        
-        await bucket.upload(localOutputFilePath, {
-            destination: outputFileName,
-        });
-
-        console.log(`[Worker] Job ${job.id}: GCS upload successful.`);
-        const gcsFile = bucket.file(outputFileName);
-
-
-        // --- NEW: CREATE A SIGNED DOWNLOAD URL ---
-        const options = {
-            version: 'v4',
-            action: 'read',
-            expires: Date.now() + 15 * 60 * 1000, // 15 minutes
-            responseDisposition: `attachment; filename="${outputFileName}"`, // Prompts download
-        };
-        const [downloadUrl] = await gcsFile.getSignedUrl(options);
-        console.log(`[Worker] Job ${job.id} successful. GCS Signed URL generated.`);
-
-        // 3. Return the result. The frontend will use this GCS URL directly.
-        return { downloadUrl, fileName: outputFileName };
-
-    } catch (error) {
-        console.error(`[Worker] Job ${job.id} failed:`, error.message);
-        throw error;
-    } finally {
-        // 4. Clean up the temporary file from the worker's local disk
-        if (localOutputFilePath) {
-            fs.unlink(localOutputFilePath)
-              .then(() => console.log(`[Worker] Cleaned up local file: ${localOutputFilePath}`))
-              .catch(err => console.error(`[Worker] Failed to cleanup local file: ${err.message}`));
-        }
-    }
-};
-
-// Create and start the worker (No change here)
-const worker = createExportWorker(processor);
-
-worker.on('completed', (job, result) => {
-  console.log(`[Worker] Job ${job.id} has completed. Download URL ready.`);
+const stopCleanup = startExportCleanup();
+const worker = createExportWorker(async (job) => {
+  const { markdownText, targetFormat, userId } = job.data;
+  // Old pre-migration jobs have no ownership information and must not be exported.
+  if (!userId) throw new Error('This export predates the local migration. Please request it again.');
+  const filePath = await exportMarkdown(markdownText, targetFormat);
+  return completedExport(filePath);
 });
 
-worker.on('failed', (job, err) => {
-  console.log(`[Worker] Job ${job.id} has failed with error: ${err.message}`);
-});
+worker.on('completed', (job) => console.log('[Worker] Export ' + job.id + ' completed.'));
+worker.on('failed', (job, error) => console.warn(JSON.stringify({
+  event: 'export_failed', jobId: job?.id ?? 'unknown',
+  format: ['pdf', 'docx'].includes(job?.data?.targetFormat) ? job.data.targetFormat : 'unknown',
+  code: typeof error?.code === 'string' && /^EXPORT_[A-Z_]+$/.test(error.code) ? error.code : 'EXPORT_FAILED',
+  ...(Number.isInteger(error?.exitCode) ? { exitCode: error.exitCode } : {}),
+})));
+worker.on('error', (error) => console.error('[Worker] Queue error:', error.code || error.name));
 
-console.log('[Worker] Worker process is running and waiting for jobs.');
+let stopping = false;
+async function stop() {
+  if (stopping) return;
+  stopping = true;
+  stopCleanup();
+  await worker.close();
+}
+process.on('SIGINT', stop);
+process.on('SIGTERM', stop);
+console.log('[Worker] Local export worker started.');

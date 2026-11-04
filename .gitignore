@@ -7,3 +7,14 @@ hwai-agent-dd5248affc71.json
 homework-help-ai-backend.env
 FileProcessor/gcs_storage_key.json
 secrets
+.env.*
+!.env.example
+*.env
+backups/
+.local/
+uploads/
+
+# Historical private database snapshots and uploaded homework: retain locally only
+migrations/schema_dump.sql
+migrations/2025-09-01_backup_before_migration.sql
+AI_ChatBot/quiz4_upload.pdf
