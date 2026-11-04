@@ -18,3 +18,16 @@ uploads/
 migrations/schema_dump.sql
 migrations/2025-09-01_backup_before_migration.sql
 AI_ChatBot/quiz4_upload.pdf
+
+# Keep credential exports and private data out of future commits
+**/client_secret*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.dump
+*.sql.gz
+schema_dump.sql
+migrations/*backup*.sql
+FileProcessor/output.docx
+math151_simple_derivative.png

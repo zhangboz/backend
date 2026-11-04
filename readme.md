@@ -74,3 +74,7 @@ Remove-Item Env:RUN_EXPORT_INTEGRATION
 Live smoke scripts require explicit flags and consume API credit or create Stripe TEST fixtures. See the main project guide before running them. Secrets, backups, tokens, uploaded homework and generated reports are excluded from Git and deployment images.
 
 The Oracle rollout is currently **SSH-only private preview**. Local Linux AMD64 checks do not establish ARM64 compatibility or public production readiness. Pandoc sandboxing and disabled TeX shell escape do not provide complete operating-system isolation for arbitrary TeX; that isolation must be completed and verified before exposing public untrusted-input exports. Cloud HTTPS/OAuth/webhook validation and historical database migration also remain pending.
+
+## Repository history cleanup — 2026-11-04
+
+The active Git history has been rewritten to remove historical credential exports, private database snapshots and uploaded/generated documents. Application source at the migration release is unchanged. Clone the repository again if your checkout predates this cleanup; do not merge or push branches from an older clone. Original history and private data remain in local ignored backups and must never be published. Removing history does not revoke previously exposed credentials.
