@@ -2,6 +2,16 @@ import Stripe from 'stripe';
 
 export const hasSubscriptionAccess = status => ['active', 'trialing'].includes(status);
 export const stripeTestOnly = () => process.env.STRIPE_TEST_MODE !== 'false';
+export function stripeDeploymentId(environment = process.env) {
+  const value = environment.STRIPE_DEPLOYMENT_ID || (environment.NODE_ENV === 'production' ? '' : 'local');
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(value)) {
+    throw paymentError('Stripe deployment identity is not configured.', 503);
+  }
+  return value;
+}
+
+export const belongsToStripeDeployment = (object, deploymentId) =>
+  object?.metadata?.app === 'homework-help-ai' && object.metadata.deployment_id === deploymentId;
 export function paymentError(message, statusCode = 409) {
   return Object.assign(new Error(message), { statusCode });
 }
@@ -30,7 +40,7 @@ export function assertStripeMode(object, testOnly = stripeTestOnly()) {
 
 export const stripeId = value => typeof value === 'string' ? value : value?.id;
 
-export async function retrieveOwnedSubscription(stripe, row, userId, testOnly = stripeTestOnly()) {
+export async function retrieveOwnedSubscription(stripe, row, userId, testOnly = stripeTestOnly(), deploymentId = stripeDeploymentId()) {
   let subscription;
   try { subscription = await stripe.subscriptions.retrieve(row.stripe_subscription_id); }
   catch (error) {
@@ -40,8 +50,11 @@ export async function retrieveOwnedSubscription(stripe, row, userId, testOnly = 
     throw error;
   }
   assertStripeMode(subscription, testOnly);
+  if (!belongsToStripeDeployment(subscription, deploymentId)) {
+    throw paymentError('This subscription belongs to another deployment or predates deployment isolation. Use a new test account.');
+  }
   if (stripeId(subscription.customer) !== row.stripe_customer_id ||
-      (subscription.metadata?.user_id && subscription.metadata.user_id !== String(userId))) {
+      subscription.metadata?.user_id !== String(userId)) {
     throw paymentError('Subscription ownership could not be verified.');
   }
   return subscription;

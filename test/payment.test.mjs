@@ -4,10 +4,12 @@ import express from 'express';
 import Stripe from 'stripe';
 import { createPaymentRouter } from '../routes/paymentRouter.mjs';
 import { createWebhookRouter, reconcileStripeEvent } from '../routes/webhookRouter.mjs';
-import { hasSubscriptionAccess, subscriptionValues, assertStripeMode, getStripeClient } from '../services/stripeService.mjs';
+import { hasSubscriptionAccess, subscriptionValues, assertStripeMode, getStripeClient, stripeDeploymentId } from '../services/stripeService.mjs';
+
+const metadata = (deployment = 'local') => ({ app: 'homework-help-ai', deployment_id: deployment, user_id: '42' });
 
 const subscription = overrides => ({ id: 'sub_test', customer: 'cus_test', livemode: false,
-  status: 'trialing', created: 100, metadata: { user_id: '42' }, cancel_at_period_end: false,
+  status: 'trialing', created: 100, metadata: metadata(), cancel_at_period_end: false,
   items: { data: [{ price: { id: 'price_test' }, current_period_end: 2000000000 }] }, ...overrides });
 const row = { stripe_subscription_id: 'sub_test', stripe_customer_id: 'cus_test', subscription_status: 'trialing' };
 
@@ -51,6 +53,13 @@ test('trialing grants access, canceled and incomplete do not', () => {
   for (const state of ['canceled', 'incomplete', 'past_due', 'inactive']) assert.equal(hasSubscriptionAccess(state), false);
 });
 
+test('local deployment defaults locally and production requires an explicit identity', () => {
+  assert.equal(stripeDeploymentId({}), 'local');
+  assert.equal(stripeDeploymentId({ NODE_ENV: 'production', STRIPE_DEPLOYMENT_ID: 'synapse-render' }), 'synapse-render');
+  assert.throws(() => stripeDeploymentId({ NODE_ENV: 'production' }), /deployment identity/);
+  assert.throws(() => stripeDeploymentId({ STRIPE_DEPLOYMENT_ID: 'invalid scope' }), /deployment identity/);
+});
+
 test('local mode refuses live keys and live objects before writes', () => {
   const previous = process.env.STRIPE_SECRET_KEY;
   const mode = process.env.STRIPE_TEST_MODE;
@@ -77,6 +86,8 @@ test('checkout includes seven-day trial and stable user ownership', async t => {
   assert.equal(payload.client_reference_id, '42');
   assert.equal(payload.subscription_data.trial_period_days, 7);
   assert.equal(payload.subscription_data.metadata.user_id, '42');
+  assert.deepEqual(payload.metadata, metadata());
+  assert.deepEqual(payload.subscription_data.metadata, metadata());
   assert.match(payload.success_url, /from=results&payment=success/);
   assert.match(options.idempotencyKey, /^local-checkout-42-/);
 });
@@ -134,7 +145,7 @@ test('trial can be canceled and a pending trial cancellation can be restored', a
 test('duplicate checkout webhooks reconcile by upsert with current Stripe state', async () => {
   const f = fixture();
   const event = { type: 'checkout.session.completed', livemode: false,
-    data: { object: { subscription: 'sub_test', customer: 'cus_test', client_reference_id: '42' } } };
+    data: { object: { subscription: 'sub_test', customer: 'cus_test', client_reference_id: '42', metadata: metadata() } } };
   await reconcileStripeEvent(event, { ...f }); await reconcileStripeEvent(event, { ...f });
   assert.equal(f.writes.length, 2);
   assert.ok(f.writes.every(write => write.sql.includes('ON CONFLICT (user_id)')));
@@ -145,16 +156,16 @@ test('delayed update uses current status and matches subscription ID, not custom
   const f = fixture(row);
   f.stripe.subscriptions.retrieve = async () => subscription({ status: 'canceled' });
   await reconcileStripeEvent({ type: 'customer.subscription.updated', livemode: false,
-    data: { object: { id: 'sub_test', status: 'active' } } }, { ...f });
+    data: { object: { id: 'sub_test', status: 'active', metadata: metadata() } } }, { ...f });
   assert.equal(f.writes[0].args[0], 'canceled');
   assert.match(f.writes[0].sql, /WHERE stripe_subscription_id = \$4 AND stripe_customer_id = \$5/);
 });
 
 test('owned subscription creation can arrive before Checkout completion', async () => {
   const f = fixture();
-  f.stripe.subscriptions.retrieve = async () => subscription({ metadata: { app: 'homework-help-ai', user_id: '42' } });
+  f.stripe.subscriptions.retrieve = async () => subscription();
   await reconcileStripeEvent({ type: 'customer.subscription.created', livemode: false,
-    data: { object: { id: 'sub_test' } } }, { ...f });
+    data: { object: { id: 'sub_test', metadata: metadata() } } }, { ...f });
   assert.match(f.writes[0].sql, /INSERT INTO subscriptions/);
   assert.equal(f.writes[0].args[0], '42');
 });
@@ -163,7 +174,7 @@ test('older checkout cannot overwrite newer subscription', async () => {
   const f = fixture({ ...row, stripe_subscription_id: 'sub_new' });
   f.stripe.subscriptions.retrieve = async id => subscription({ id, created: id === 'sub_new' ? 200 : 100 });
   await reconcileStripeEvent({ type: 'checkout.session.completed', livemode: false,
-    data: { object: { subscription: 'sub_test', customer: 'cus_test', client_reference_id: '42' } } }, { ...f });
+    data: { object: { subscription: 'sub_test', customer: 'cus_test', client_reference_id: '42', metadata: metadata() } } }, { ...f });
   assert.equal(f.writes.length, 0);
 });
 
@@ -176,7 +187,7 @@ test('overlapping webhook deliveries serialize their current-state fetch and wri
   let reads = 0;
   f.stripe.subscriptions.retrieve = async () => { reads++; return subscription(); };
   f.database.query = async () => { started(); await blocked; return { rows: [] }; };
-  const event = { type: 'customer.subscription.updated', livemode: false, data: { object: { id: 'sub_test' } } };
+  const event = { type: 'customer.subscription.updated', livemode: false, data: { object: { id: 'sub_test', metadata: metadata() } } };
   const first = reconcileStripeEvent(event, { ...f });
   await writeStarted;
   const second = reconcileStripeEvent(event, { ...f });
@@ -185,6 +196,87 @@ test('overlapping webhook deliveries serialize their current-state fetch and wri
   release();
   await Promise.all([first, second]);
   assert.equal(reads, 2);
+});
+
+test('local and cloud ignore foreign or untagged events before any database access', async () => {
+  for (const deploymentId of ['local', 'synapse-render']) {
+    for (const eventMetadata of [metadata(deploymentId === 'local' ? 'synapse-render' : 'local'),
+      { app: 'homework-help-ai', user_id: '42' }]) {
+      for (const type of ['checkout.session.completed', 'customer.subscription.created',
+        'customer.subscription.updated', 'customer.subscription.deleted']) {
+        await reconcileStripeEvent({ type, livemode: false, data: { object: {
+          id: 'sub_test', subscription: 'sub_test', customer: 'cus_test', client_reference_id: '42', metadata: eventMetadata,
+        } } }, {
+          deploymentId,
+          database: { query: async () => assert.fail('Foreign events must not access the copied user ID.') },
+          stripe: { subscriptions: { retrieve: async () => assert.fail('Foreign events need no Stripe retrieval.') } },
+        });
+      }
+    }
+  }
+});
+
+test('same-scope event cannot claim a current subscription from another deployment', async () => {
+  const f = fixture();
+  f.stripe.subscriptions.retrieve = async () => subscription({ metadata: metadata('local') });
+  f.database.query = async () => assert.fail('Mismatched current ownership must not access the database.');
+  await reconcileStripeEvent({ type: 'checkout.session.completed', livemode: false, data: { object: {
+    subscription: 'sub_test', customer: 'cus_test', client_reference_id: '42', metadata: metadata('synapse-render'),
+  } } }, { ...f, deploymentId: 'synapse-render' });
+});
+
+test('a new scoped creation cannot replace an untagged historical subscription on the copied user', async () => {
+  const f = fixture({ ...row, stripe_subscription_id: 'sub_legacy', subscription_status: 'canceled' });
+  f.stripe.subscriptions.retrieve = async id => subscription({ id, status: 'canceled',
+    metadata: id === 'sub_legacy' ? { user_id: '42' } : metadata('synapse-render') });
+  await assert.rejects(reconcileStripeEvent({ type: 'customer.subscription.created', livemode: false,
+    data: { object: subscription({ metadata: metadata('synapse-render') }) } },
+  { ...f, deploymentId: 'synapse-render' }), /predates deployment isolation/);
+  assert.equal(f.writes.length, 0);
+});
+
+test('same user and customer IDs cannot mutate a foreign or untagged saved subscription', async t => {
+  for (const subscriptionMetadata of [metadata('local'), { app: 'homework-help-ai', user_id: '42' },
+    { ...metadata('synapse-render'), user_id: '99' }]) {
+    const f = fixture(row);
+    f.stripe.subscriptions.retrieve = async () => subscription({ metadata: subscriptionMetadata });
+    const post = await serve(t, createPaymentRouter({ database: f.database, getStripe: () => f.stripe,
+      testOnly: () => true, deploymentId: () => 'synapse-render' }));
+    for (const path of ['/create-checkout-session', '/cancel-subscription', '/reactivate-subscription']) {
+      assert.equal((await post(path)).status, 409);
+    }
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.writes.length, 0);
+  }
+});
+
+test('cloud checkout, creation webhook, cancellation and restoration keep their deployment ownership', async t => {
+  const deploymentId = 'synapse-render';
+  const f = fixture();
+  const options = { database: f.database, getStripe: () => f.stripe, testOnly: () => true,
+    priceId: () => 'price_test', deploymentId: () => deploymentId, now: () => 1200000 };
+  const post = await serve(t, createPaymentRouter(options));
+  assert.equal((await post('/create-checkout-session')).status, 200);
+  const payload = f.calls[0].payload;
+  assert.deepEqual(payload.metadata, metadata(deploymentId));
+  assert.deepEqual(payload.subscription_data.metadata, metadata(deploymentId));
+  f.stripe.subscriptions.retrieve = async () => subscription({ metadata: payload.subscription_data.metadata });
+  await reconcileStripeEvent({ type: 'customer.subscription.created', livemode: false,
+    data: { object: subscription({ metadata: payload.subscription_data.metadata }) } }, { ...f, deploymentId });
+  assert.equal(f.writes[0].args[0], '42');
+  assert.equal(f.writes[0].args[4], 'trialing');
+  const existing = fixture(row);
+  let current = subscription({ metadata: metadata(deploymentId) });
+  existing.stripe.subscriptions.retrieve = async () => current;
+  existing.stripe.subscriptions.update = async (_id, changes) => {
+    current = { ...current, ...changes }; return current;
+  };
+  const change = await serve(t, createPaymentRouter({ ...options, database: existing.database, getStripe: () => existing.stripe }));
+  assert.equal((await change('/cancel-subscription')).status, 200);
+  assert.equal(current.cancel_at_period_end, true);
+  assert.equal((await change('/reactivate-subscription')).status, 200);
+  assert.equal(current.cancel_at_period_end, false);
+  assert.equal(existing.writes.length, 2);
 });
 
 test('webhook rejects invalid signatures and accepts a correctly signed ignored test event', async t => {
@@ -198,6 +290,9 @@ test('webhook rejects invalid signatures and accepts a correctly signed ignored 
   assert.equal((await post('/', body, { 'stripe-signature': 'invalid' })).status, 400);
   const signature = localStripe.webhooks.generateTestHeaderString({ payload: JSON.stringify(body), secret });
   assert.equal((await post('/', body, { 'stripe-signature': signature })).status, 200);
+  const foreign = { ...body, type: 'customer.subscription.created', data: { object: subscription({ metadata: metadata('synapse-render') }) } };
+  const foreignSignature = localStripe.webhooks.generateTestHeaderString({ payload: JSON.stringify(foreign), secret });
+  assert.equal((await post('/', foreign, { 'stripe-signature': foreignSignature })).status, 200);
   const live = { ...body, livemode: true };
   const liveSignature = localStripe.webhooks.generateTestHeaderString({ payload: JSON.stringify(live), secret });
   assert.equal((await post('/', live, { 'stripe-signature': liveSignature })).status, 409);

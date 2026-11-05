@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import pg from 'pg';
 import bcrypt from 'bcryptjs';
 import Stripe from 'stripe';
+import { stripeDeploymentId } from '../services/stripeService.mjs';
 
 // This opt-in smoke test creates only isolated local users and Stripe TEST
 // objects. Existing user/subscription rows are fingerprinted before and after.
@@ -30,6 +31,8 @@ assert(!process.env.DATABASE_URL, 'Use the explicit local DB settings for this t
 assert(process.env.STRIPE_TEST_MODE !== 'false', 'Stripe test mode must remain enabled.');
 assert(/^(sk|rk)_test_/.test(process.env.STRIPE_SECRET_KEY || ''), 'A Stripe test key is required.');
 assert(process.env.STRIPE_WEBHOOK_SECRET, 'Local Stripe CLI webhook signing secret is required.');
+const deploymentId = stripeDeploymentId();
+assert.equal(deploymentId, 'local', 'This smoke test requires the local Stripe deployment identity.');
 assert.equal(spawnSync('git', ['check-ignore', '--quiet', '.local/test-accounts.json'], { cwd: root }).status, 0,
   'Test credentials must be ignored by Git.');
 
@@ -146,7 +149,7 @@ async function state(fixture) {
 async function trial(fixture) {
   if (!fixture.customerId) {
     const customer = testObject(await stripe.customers.create({ name: 'Local integration test fixture',
-      metadata: { app: 'homework-help-ai', local_smoke_run: registry.runId, user_id: String(fixture.id) } }));
+      metadata: { app: 'homework-help-ai', deployment_id: deploymentId, local_smoke_run: registry.runId, user_id: String(fixture.id) } }));
     fixture.customerId = customer.id;
     await saveAccounts();
   } else {
@@ -156,12 +159,14 @@ async function trial(fixture) {
   if (fixture.subscriptionId) {
     const prior = testObject(await stripe.subscriptions.retrieve(fixture.subscriptionId));
     assert.equal(prior.metadata?.local_smoke_run, registry.runId, 'Subscription is not owned by this fixture.');
+    assert.equal(prior.metadata?.deployment_id, deploymentId,
+      'This legacy fixture predates deployment isolation. Preserve it and use fresh test accounts; do not claim its subscription.');
     if (prior.status === 'trialing') return prior;
   }
   const subscription = testObject(await stripe.subscriptions.create({ customer: fixture.customerId,
     items: [{ price: process.env.STRIPE_PRICE_ID }], trial_period_days: 7,
     trial_settings: { end_behavior: { missing_payment_method: 'cancel' } },
-    metadata: { app: 'homework-help-ai', local_smoke_run: registry.runId, user_id: String(fixture.id) },
+    metadata: { app: 'homework-help-ai', deployment_id: deploymentId, local_smoke_run: registry.runId, user_id: String(fixture.id) },
   }, { idempotencyKey: `local-smoke-${registry.runId}-${fixture.id}-${Date.now()}` }));
   createdSubscriptions.add(subscription.id);
   fixture.subscriptionId = subscription.id;

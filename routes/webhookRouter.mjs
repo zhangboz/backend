@@ -1,7 +1,7 @@
 import express from 'express';
 import db from '../db.mjs';
-import { assertStripeMode, getStripeClient, hasSubscriptionAccess, paymentError,
-  retrieveOwnedSubscription, stripeId, stripeTestOnly, subscriptionValues, updateSubscription } from '../services/stripeService.mjs';
+import { assertStripeMode, belongsToStripeDeployment, getStripeClient, hasSubscriptionAccess, paymentError,
+  retrieveOwnedSubscription, stripeDeploymentId, stripeId, stripeTestOnly, subscriptionValues, updateSubscription } from '../services/stripeService.mjs';
 
 const pendingSubscriptions = new Map();
 
@@ -18,14 +18,19 @@ export function reconcileStripeEvent(event, dependencies) {
   });
 }
 
-async function reconcileStripeEventOnce(event, { stripe, database, testOnly = true }) {
+async function reconcileStripeEventOnce(event, { stripe, database, testOnly = true, deploymentId = stripeDeploymentId() }) {
   assertStripeMode(event, testOnly);
   if (!['checkout.session.completed', 'customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted'].includes(event.type)) return;
   const object = event.data.object;
+  // A test account can send the same event to local and cloud endpoints. User IDs
+  // alone are not globally unique after copying the database. Untagged historical
+  // objects are deliberately not claimed by either deployment.
+  if (!belongsToStripeDeployment(object, deploymentId)) return;
   const subscriptionId = event.type === 'checkout.session.completed' ? stripeId(object.subscription) : object.id;
   if (!subscriptionId) throw paymentError('Webhook has no subscription ID.', 400);
   // Retrieve current state so delayed events cannot restore obsolete status.
   const subscription = assertStripeMode(await stripe.subscriptions.retrieve(subscriptionId), testOnly);
+  if (!belongsToStripeDeployment(subscription, deploymentId)) return;
   const values = subscriptionValues(subscription);
   const userId = subscription.metadata?.user_id ||
     (event.type === 'checkout.session.completed' ? object.client_reference_id : null);
@@ -43,7 +48,7 @@ async function reconcileStripeEventOnce(event, { stripe, database, testOnly = tr
     'SELECT stripe_subscription_id, stripe_customer_id, subscription_status FROM subscriptions WHERE user_id = $1', [userId])).rows[0];
   if (existing && existing.stripe_subscription_id !== subscription.id) {
     // Never overwrite a historical live record or a newer subscription.
-    const old = await retrieveOwnedSubscription(stripe, existing, userId, testOnly);
+    const old = await retrieveOwnedSubscription(stripe, existing, userId, testOnly, deploymentId);
     if (old.created >= subscription.created || hasSubscriptionAccess(old.status)) return;
     if (stripeId(old.customer) !== values[0]) throw paymentError('A different customer is already linked to this account.');
   }
@@ -61,7 +66,8 @@ async function reconcileStripeEventOnce(event, { stripe, database, testOnly = tr
 }
 
 export function createWebhookRouter({ database = db, getStripe = getStripeClient,
-  testOnly = stripeTestOnly, webhookSecret = () => process.env.STRIPE_WEBHOOK_SECRET } = {}) {
+  testOnly = stripeTestOnly, webhookSecret = () => process.env.STRIPE_WEBHOOK_SECRET,
+  deploymentId = stripeDeploymentId } = {}) {
   const router = express.Router();
   router.post('/', async (req, res, next) => {
     let event;
@@ -73,7 +79,7 @@ export function createWebhookRouter({ database = db, getStripe = getStripeClient
     try { event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], webhookSecret()); }
     catch { return res.status(400).json({ message: 'Invalid Stripe webhook signature.' }); }
     try {
-      await reconcileStripeEvent(event, { stripe, database, testOnly: testOnly() });
+      await reconcileStripeEvent(event, { stripe, database, testOnly: testOnly(), deploymentId: deploymentId() });
       res.json({ received: true });
     } catch (error) { next(error); }
   });

@@ -68,6 +68,8 @@ Render Free blocks common SMTP ports, so production mail uses `EMAIL_PROVIDER=re
 
 Run `npm run local:stripe` for local TEST webhook forwarding, then restart the API if necessary to load its current secret. Cloud tests need a separate TEST endpoint and signing secret. Use a new fixture customer; do not repurpose historical live/test subscriptions or enable live billing.
 
+Keep `STRIPE_DEPLOYMENT_ID=local` for the local database and use `synapse-render` for the Render/Neon deployment. Production requires this setting explicitly. Checkout and subscriptions carry the deployment identity in Stripe metadata. Webhooks acknowledge events from other deployments or untagged historical objects without reading/writing application records; the current Stripe subscription must also match. Cancellation, restoration and Checkout reuse reject foreign or untagged historical subscriptions rather than claiming them. Existing database records remain unchanged; create new test accounts for the deployment's billing acceptance.
+
 `GET /api/health` checks process liveness without querying PostgreSQL and is the Render health-check path. Use `GET /api/ready` manually to check database/runtime tables; do not point uptime monitoring at it. The database pool has five connections maximum and a ten-second idle timeout so idle Neon compute can sleep.
 
 ## Preserved concept feature

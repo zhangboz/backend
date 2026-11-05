@@ -2,11 +2,11 @@ import express from 'express';
 import { createHash } from 'node:crypto';
 import db from '../db.mjs';
 import { assertStripeMode, getStripeClient, hasSubscriptionAccess, paymentError,
-  retrieveOwnedSubscription, stripeTestOnly, updateSubscription } from '../services/stripeService.mjs';
+  retrieveOwnedSubscription, stripeDeploymentId, stripeTestOnly, updateSubscription } from '../services/stripeService.mjs';
 
 export function createPaymentRouter({ database = db, getStripe = getStripeClient,
   testOnly = stripeTestOnly, frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000',
-  priceId = () => process.env.STRIPE_PRICE_ID, now = Date.now } = {}) {
+  priceId = () => process.env.STRIPE_PRICE_ID, deploymentId = stripeDeploymentId, now = Date.now } = {}) {
   const router = express.Router();
   const rowFor = async userId => (await database.query(
     'SELECT stripe_subscription_id, subscription_status, stripe_customer_id, cancel_at_period_end FROM subscriptions WHERE user_id = $1',
@@ -15,11 +15,12 @@ export function createPaymentRouter({ database = db, getStripe = getStripeClient
   router.post('/create-checkout-session', async (req, res, next) => {
     try {
       const stripe = getStripe();
+      const scope = deploymentId();
       const userId = req.user.user_id;
       const row = await rowFor(userId);
       let existing;
       if (row?.stripe_subscription_id) {
-        existing = await retrieveOwnedSubscription(stripe, row, userId, testOnly());
+        existing = await retrieveOwnedSubscription(stripe, row, userId, testOnly(), scope);
         if (hasSubscriptionAccess(existing.status)) throw paymentError('An active or trial subscription already exists.');
       }
       const price = assertStripeMode(await stripe.prices.retrieve(priceId()), testOnly());
@@ -42,8 +43,8 @@ export function createPaymentRouter({ database = db, getStripe = getStripeClient
         payment_method_types: ['card'], mode: 'subscription',
         line_items: [{ price: price.id, quantity: 1 }],
         success_url: successUrl.toString(), cancel_url: cancelUrl.toString(),
-        client_reference_id: String(userId), metadata: { app: 'homework-help-ai', user_id: String(userId) },
-        subscription_data: { trial_period_days: 7, metadata: { app: 'homework-help-ai', user_id: String(userId) } },
+        client_reference_id: String(userId), metadata: { app: 'homework-help-ai', deployment_id: scope, user_id: String(userId) },
+        subscription_data: { trial_period_days: 7, metadata: { app: 'homework-help-ai', deployment_id: scope, user_id: String(userId) } },
       };
       if (row?.stripe_customer_id) {
         let customer;
@@ -71,9 +72,10 @@ export function createPaymentRouter({ database = db, getStripe = getStripeClient
     router.post(`/${path}`, async (req, res, next) => {
       try {
         const stripe = getStripe();
+        const scope = deploymentId();
         const row = await rowFor(req.user.user_id);
         if (!row?.stripe_subscription_id) throw paymentError('No subscription found.', 404);
-        const subscription = await retrieveOwnedSubscription(stripe, row, req.user.user_id, testOnly());
+        const subscription = await retrieveOwnedSubscription(stripe, row, req.user.user_id, testOnly(), scope);
         if (!hasSubscriptionAccess(subscription.status)) throw paymentError('Only an active or trial subscription can be changed.');
         if (!cancel && !subscription.cancel_at_period_end) throw paymentError('The subscription is not scheduled for cancellation.');
         const updated = assertStripeMode(await stripe.subscriptions.update(subscription.id, { cancel_at_period_end: cancel }), testOnly());
