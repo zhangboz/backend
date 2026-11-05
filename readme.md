@@ -68,7 +68,15 @@ Render Free blocks common SMTP ports, so production mail uses `EMAIL_PROVIDER=re
 
 Run `npm run local:stripe` for local TEST webhook forwarding, then restart the API if necessary to load its current secret. Cloud tests need a separate TEST endpoint and signing secret. Use a new fixture customer; do not repurpose historical live/test subscriptions or enable live billing.
 
-Keep `STRIPE_DEPLOYMENT_ID=local` for the local database and use `synapse-render` for the Render/Neon deployment. Production requires this setting explicitly. Checkout and subscriptions carry the deployment identity in Stripe metadata. Webhooks acknowledge events from other deployments or untagged historical objects without reading/writing application records; the current Stripe subscription must also match. Cancellation, restoration and Checkout reuse reject foreign or untagged historical subscriptions rather than claiming them. Existing database records remain unchanged; create new test accounts for the deployment's billing acceptance.
+Keep `STRIPE_DEPLOYMENT_ID=local` for the local database and use `synapse-render` for the Render/Neon deployment. Production requires this setting explicitly. Checkout and subscriptions carry the deployment identity in Stripe metadata. Webhooks acknowledge events from other deployments or untagged historical objects without reading/writing application records; the current Stripe subscription must also match. Cancellation and restoration require a subscription owned by this deployment. Use new test accounts for billing acceptance.
+
+### Stripe is the subscription source of truth
+
+`services/subscriptionState.mjs` retrieves Stripe state for `/api/user/status`, premium authorization and payment actions. PostgreSQL stores the identity link and a repairable snapshot; cached status and dates never grant access. Only verified Stripe `active` or `trialing` statuses qualify. Concurrent requests for the same user share an in-flight read, with no status TTL or stale-on-error fallback. Calls have bounded timeouts and no automatic retries.
+
+Account status includes `subscriptionSource`, `subscriptionVerified`, `subscriptionSyncState`, `subscriptionCheckedAt`, `canSubscribe` and `canManageSubscription`. Stripe failures keep the account endpoint available with an unknown status; premium requests return 503, and billing actions remain disabled until verification succeeds. A genuine inactive subscription returns 403 for premium access. Frontend authentication is unaffected by a Stripe outage.
+
+A saved subscription returning `resource_missing` is insufficient to mark it inactive. The resolver independently verifies the saved customer's ownership and lists all subscriptions. An owned empty customer clears stale status/dates while retaining historical IDs. A current deployment-owned replacement can repair a missed webhook. Untagged existing subscriptions can be read after ownership verification, but are not automatically adopted for mutations. Projection updates compare the original database timestamp and IDs to avoid overwriting a concurrent webhook; unchanged snapshots produce no write. No schema migration or Stripe metadata rewrite is required.
 
 `GET /api/health` checks process liveness without querying PostgreSQL and is the Render health-check path. Use `GET /api/ready` manually to check database/runtime tables; do not point uptime monitoring at it. The database pool has five connections maximum and a ten-second idle timeout so idle Neon compute can sleep.
 
@@ -88,7 +96,7 @@ Active Git history was sanitized on 2026-11-04. The [original backend repository
 
 ## Live release verification — 2026-11-04
 
-- All 108 backend tests passed in the isolated Node 24 Linux production image; all 31 React tests and the production frontend build passed.
+- The subscription-authority update passed all 136 backend tests in the isolated Node 24 Linux production image. Eleven Neon temporary-table checks verified missing/canceled/active state repair, replacement links, idempotent writes and rollback with unchanged public data and sequences. Frontend validation passed 47 tests and its production build.
 - Eleven real local PostgreSQL checks passed, including concurrent quotas, idempotency, poll leases, session expiry and cleanup. Existing 38 users and 30 subscriptions had identical before/after fingerprints; the temporary test schema was removed.
 - Actual HTTP exports produced PDF and DOCX from synthetic bilingual Markdown. Duplicate creation reused one job; PDF completed after an API restart, and signed download tampering was rejected. Generation is model-driven; Word equations may be images rather than native editable math.
 - The Render Blueprint passed the official schema check and declares only a Free API plus a static site. The production Docker context is an allowlist; it excludes local data, environment files, keys, backups and retired converters.

@@ -1,6 +1,7 @@
 // backend/middleware/auth.mjs
 import jwt from 'jsonwebtoken';
-import db from '../db.mjs';
+import { subscriptionResolver } from '../services/subscriptionState.mjs';
+import { hasSubscriptionAccess } from '../services/stripeService.mjs';
 export const requireAuth = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1]; // Bearer <TOKEN>
@@ -28,21 +29,20 @@ export const requireAuth = (req, res, next) => {
   }
 };
 
-export const requireSubscription = async (req, res, next) => {
+export const createRequireSubscription = ({ resolver = subscriptionResolver } = {}) => async (req, res, next) => {
   // This middleware MUST run AFTER requireAuth
   if (!req.user) {
     return res.status(401).json({ message: 'Authentication required.' });
   }
 
   try {
-    const subResult = await db.query(
-      "SELECT subscription_status FROM subscriptions WHERE user_id = $1 AND subscription_status IN ('active', 'trialing') AND current_period_end > NOW()",
-      [req.user.user_id]
-    );
-
-    if (subResult.rows.length === 0) {
-      // User has no active subscription
-      return res.status(403).json({ message: 'An active subscription or trial is required for this feature.' });
+    const { state } = await resolver.resolve(req.user);
+    if (!state.subscriptionVerified || state.subscriptionSyncState !== 'verified' || !hasSubscriptionAccess(state.subscriptionStatus)) {
+      const unavailable = state.subscriptionSyncState === 'unavailable';
+      return res.status(unavailable ? 503 : 403).json({
+        code: unavailable ? 'SUBSCRIPTION_UNAVAILABLE' : 'SUBSCRIPTION_REQUIRED',
+        message: state.subscriptionMessage || 'An active subscription or trial is required for this feature.',
+      });
     }
 
     // User is authenticated and has an active subscription, proceed.
@@ -51,6 +51,8 @@ export const requireSubscription = async (req, res, next) => {
     next(error);
   }
 };
+
+export const requireSubscription = createRequireSubscription();
 
 export const requireAdmin = (req, res, next) => {
     // This middleware should run AFTER requireAuth, so req.user will be populated.

@@ -16,15 +16,17 @@ const row = { stripe_subscription_id: 'sub_test', stripe_customer_id: 'cus_test'
 function fixture(existing) {
   const writes = [];
   const database = { query: async (sql, args) => {
+    if (/FROM users\b/.test(sql)) return { rows: [{ user_id: 42, email: 'test@example.invalid' }] };
     if (sql.startsWith('SELECT')) return { rows: existing ? [existing] : [] };
     writes.push({ sql, args }); return { rows: [], rowCount: 1 };
   } };
   const calls = [];
   const stripe = {
     prices: { retrieve: async () => ({ id: 'price_test', active: true, type: 'recurring', livemode: false }) },
-    customers: { retrieve: async () => ({ id: 'cus_test', livemode: false }) },
+    customers: { retrieve: async () => ({ id: 'cus_test', email: 'test@example.invalid', livemode: false, metadata: {} }) },
     subscriptions: {
       retrieve: async () => subscription(),
+      list: async () => ({ data: existing ? [await stripe.subscriptions.retrieve(existing.stripe_subscription_id)] : [], has_more: false }),
       update: async (id, changes) => { calls.push({ id, changes }); return subscription(changes); },
     },
     checkout: { sessions: { create: async (payload, options) => {
@@ -120,9 +122,10 @@ test('Checkout idempotency distinguishes new lifecycle and changed return URLs',
   assert.notEqual(f.calls[2].options.idempotencyKey, f.calls[3].options.idempotencyKey);
 });
 
-test('historical subscriptions missing in test mode cannot be mutated', async t => {
+test('a missing historical subscription with an unverifiable customer cannot be checked out or mutated', async t => {
   const f = fixture(row);
   f.stripe.subscriptions.retrieve = async () => { throw Object.assign(new Error('missing'), { code: 'resource_missing' }); };
+  f.stripe.customers.retrieve = async () => { throw Object.assign(new Error('missing'), { code: 'resource_missing' }); };
   const post = await serve(t, createPaymentRouter({ database: f.database, getStripe: () => f.stripe, testOnly: () => true }));
   for (const path of ['/create-checkout-session', '/cancel-subscription', '/reactivate-subscription']) {
     assert.equal((await post(path)).status, 409);
@@ -130,12 +133,70 @@ test('historical subscriptions missing in test mode cannot be mutated', async t 
   assert.equal(f.calls.length, 0); assert.equal(f.writes.length, 0);
 });
 
+test('missing old subscription and verified empty customer allow checkout despite cached active state', async t => {
+  const f = fixture({ ...row, stripe_subscription_id: 'sub_historical', subscription_status: 'active' });
+  f.stripe.subscriptions.retrieve = async () => { throw Object.assign(new Error('missing'), { code: 'resource_missing' }); };
+  f.stripe.subscriptions.list = async () => ({ data: [], has_more: false });
+  const post = await serve(t, createPaymentRouter({ database: f.database, getStripe: () => f.stripe,
+    testOnly: () => true, priceId: () => 'price_test' }));
+  assert.equal((await post('/create-checkout-session')).status, 200);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].payload.customer, 'cus_test');
+  assert.equal(f.calls[0].payload.customer_email, undefined);
+  for (const path of ['/cancel-subscription', '/reactivate-subscription']) assert.equal((await post(path)).status, 409);
+  assert.equal(f.calls.length, 1, 'A missing Stripe object must never be mutated.');
+});
+
+test('an unverified resolver state blocks all payment actions without creating a checkout', async t => {
+  for (const syncState of ['unavailable', 'unlinked', 'foreign']) {
+    const f = fixture(row);
+    const resolver = { resolve: async () => ({ state: { subscriptionStatus: 'unknown',
+      subscriptionSyncState: syncState, subscriptionVerified: false, canSubscribe: false, canManageSubscription: false },
+      row, subscription: null, customer: null, replacementAllowed: false }) };
+    const post = await serve(t, createPaymentRouter({ database: f.database, getStripe: () => f.stripe,
+      resolver, testOnly: () => true }));
+    for (const path of ['/create-checkout-session', '/cancel-subscription', '/reactivate-subscription']) {
+      assert.equal((await post(path)).status, syncState === 'unavailable' ? 503 : 409);
+    }
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.writes.length, 0);
+  }
+});
+
+test('verified incomplete subscription resumes its invoice without creating a second checkout', async t => {
+  const f = fixture(row);
+  const incomplete = subscription({ status: 'incomplete' });
+  const resolver = { resolve: async () => ({ state: { subscriptionStatus: 'incomplete',
+    subscriptionSyncState: 'verified', subscriptionVerified: true, canSubscribe: true, canManageSubscription: false },
+    row, subscription: incomplete, customer: { id: 'cus_test' }, replacementAllowed: false }) };
+  f.stripe.subscriptions.retrieve = async (id, options) => {
+    assert.equal(id, incomplete.id); assert.deepEqual(options.expand, ['latest_invoice']);
+    return { ...incomplete, latest_invoice: { status: 'open', hosted_invoice_url: 'https://invoice.stripe.com/test' } };
+  };
+  const post = await serve(t, createPaymentRouter({ database: f.database, getStripe: () => f.stripe, resolver, testOnly: () => true }));
+  const response = await post('/create-checkout-session');
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { url: 'https://invoice.stripe.com/test' });
+  assert.equal(f.calls.length, 0);
+});
+
+test('an untagged incomplete subscription cannot be resumed through the checkout endpoint', async t => {
+  const f = fixture({ ...row, subscription_status: 'incomplete' });
+  f.stripe.subscriptions.retrieve = async (_id, options) => {
+    assert.equal(options?.expand, undefined, 'An unowned invoice must not be fetched for payment.');
+    return subscription({ status: 'incomplete', metadata: { user_id: '42' } });
+  };
+  const post = await serve(t, createPaymentRouter({ database: f.database, getStripe: () => f.stripe, testOnly: () => true }));
+  assert.equal((await post('/create-checkout-session')).status, 409);
+  assert.equal(f.calls.length, 0);
+});
+
 test('trial can be canceled and a pending trial cancellation can be restored', async t => {
   const f = fixture(row);
   const post = await serve(t, createPaymentRouter({ database: f.database, getStripe: () => f.stripe, testOnly: () => true }));
   assert.equal((await post('/cancel-subscription')).status, 200);
   assert.equal(f.calls[0].changes.cancel_at_period_end, true);
-  assert.equal(f.writes[0].args[0], 'trialing');
+  assert.equal(f.writes.at(-1).args[0], 'trialing');
   assert.equal((await post('/reactivate-subscription')).status, 409);
   f.stripe.subscriptions.retrieve = async () => subscription({ cancel_at_period_end: true });
   assert.equal((await post('/reactivate-subscription')).status, 200);
@@ -176,6 +237,59 @@ test('older checkout cannot overwrite newer subscription', async () => {
   await reconcileStripeEvent({ type: 'checkout.session.completed', livemode: false,
     data: { object: { subscription: 'sub_test', customer: 'cus_test', client_reference_id: '42', metadata: metadata() } } }, { ...f });
   assert.equal(f.writes.length, 0);
+});
+
+test('new scoped subscription replaces a missing old ID for the verified same customer despite cached active status', async () => {
+  const previous = { ...row, stripe_subscription_id: 'sub_missing', subscription_status: 'active' };
+  const f = fixture(previous);
+  f.stripe.subscriptions.retrieve = async id => {
+    if (id === 'sub_missing') throw Object.assign(new Error('missing'), { code: 'resource_missing' });
+    return subscription({ id, metadata: metadata('synapse-render') });
+  };
+  await reconcileStripeEvent({ type: 'customer.subscription.created', livemode: false,
+    data: { object: subscription({ metadata: metadata('synapse-render') }) } }, { ...f, deploymentId: 'synapse-render' });
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.writes[0].args[0], '42');
+  assert.equal(f.writes[0].args[7], 'sub_missing');
+  assert.match(f.writes[0].sql, /subscriptions.stripe_subscription_id = \$8/);
+  assert.doesNotMatch(f.writes[0].sql, /subscription_status NOT IN/);
+});
+
+test('current canceled Stripe state allows a newer scoped replacement even when database says active', async () => {
+  const f = fixture({ ...row, stripe_subscription_id: 'sub_previous', subscription_status: 'active' });
+  f.stripe.subscriptions.retrieve = async id => subscription({ id,
+    status: id === 'sub_previous' ? 'canceled' : 'trialing', created: id === 'sub_previous' ? 90 : 100 });
+  await reconcileStripeEvent({ type: 'customer.subscription.created', livemode: false,
+    data: { object: subscription() } }, { ...f });
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.writes[0].args[7], 'sub_previous');
+});
+
+test('missing-old replacement fails closed for customer conflicts and Stripe outages', async () => {
+  const cases = [
+    { customer: { id: 'cus_different', email: 'test@example.invalid', livemode: false } },
+    { customer: { id: 'cus_test', email: 'someone@example.invalid', livemode: false } },
+    { customer: { id: 'cus_test', email: 'test@example.invalid', livemode: true } },
+    { customer: { id: 'cus_test', email: 'test@example.invalid', livemode: false, deleted: true } },
+    ...[{ deployment_id: 'foreign' }, { user_id: '99' }, { app: 'another-app' }].map(tags => ({
+      customer: { id: 'cus_test', email: 'test@example.invalid', livemode: false, metadata: tags },
+    })),
+    { oldError: 'api_connection_error' }, { customerError: 'api_connection_error' }, { customerError: 'resource_missing' },
+  ];
+  for (const scenario of cases) {
+    const f = fixture({ ...row, stripe_subscription_id: 'sub_missing', subscription_status: 'active' });
+    f.stripe.subscriptions.retrieve = async id => {
+      if (id === 'sub_missing') throw Object.assign(new Error('Stripe error'), { code: scenario.oldError || 'resource_missing' });
+      return subscription();
+    };
+    f.stripe.customers.retrieve = async () => {
+      if (scenario.customerError) throw Object.assign(new Error('Stripe error'), { code: scenario.customerError });
+      return scenario.customer;
+    };
+    await assert.rejects(reconcileStripeEvent({ type: 'customer.subscription.created', livemode: false,
+      data: { object: subscription() } }, { ...f }));
+    assert.equal(f.writes.length, 0);
+  }
 });
 
 test('overlapping webhook deliveries serialize their current-state fetch and write', async () => {
@@ -246,7 +360,10 @@ test('same user and customer IDs cannot mutate a foreign or untagged saved subsc
       assert.equal((await post(path)).status, 409);
     }
     assert.equal(f.calls.length, 0);
-    assert.equal(f.writes.length, 0);
+    // Read-only verification may refresh an untagged legacy projection, but it
+    // must preserve the saved identity and never mutate or adopt Stripe objects.
+    assert.ok(f.writes.every(write => write.args[0] === row.stripe_subscription_id &&
+      write.args[6] === row.stripe_customer_id && write.args[7] === row.stripe_subscription_id));
   }
 });
 
@@ -276,7 +393,7 @@ test('cloud checkout, creation webhook, cancellation and restoration keep their 
   assert.equal(current.cancel_at_period_end, true);
   assert.equal((await change('/reactivate-subscription')).status, 200);
   assert.equal(current.cancel_at_period_end, false);
-  assert.equal(existing.writes.length, 2);
+  assert.equal(existing.writes.filter(write => write.sql.includes('SET subscription_status =')).length, 2);
 });
 
 test('webhook rejects invalid signatures and accepts a correctly signed ignored test event', async t => {

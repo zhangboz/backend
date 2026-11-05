@@ -1,7 +1,7 @@
 import express from 'express';
 import db from '../db.mjs';
 import { assertStripeMode, belongsToStripeDeployment, getStripeClient, hasSubscriptionAccess, paymentError,
-  retrieveOwnedSubscription, stripeDeploymentId, stripeId, stripeTestOnly, subscriptionValues, updateSubscription } from '../services/stripeService.mjs';
+  stripeDeploymentId, stripeId, stripeTestOnly, subscriptionValues, updateSubscription } from '../services/stripeService.mjs';
 
 const pendingSubscriptions = new Map();
 
@@ -46,11 +46,49 @@ async function reconcileStripeEventOnce(event, { stripe, database, testOnly = tr
       (isCheckout && stripeId(object.customer) !== values[0])) throw paymentError('Webhook subscription ownership could not be verified.', 400);
   const existing = (await database.query(
     'SELECT stripe_subscription_id, stripe_customer_id, subscription_status FROM subscriptions WHERE user_id = $1', [userId])).rows[0];
+  if (existing && existing.stripe_customer_id !== values[0]) {
+    throw paymentError('A different customer is already linked to this account.');
+  }
+  let replaceSubscriptionId = null;
   if (existing && existing.stripe_subscription_id !== subscription.id) {
-    // Never overwrite a historical live record or a newer subscription.
-    const old = await retrieveOwnedSubscription(stripe, existing, userId, testOnly, deploymentId);
-    if (old.created >= subscription.created || hasSubscriptionAccess(old.status)) return;
-    if (stripeId(old.customer) !== values[0]) throw paymentError('A different customer is already linked to this account.');
+    let old;
+    try { old = await stripe.subscriptions.retrieve(existing.stripe_subscription_id); }
+    catch (error) {
+      if (error.code !== 'resource_missing') throw error;
+      // A copied historical mapping can point to a subscription absent from the
+      // current Stripe account. Verify its still-existing customer independently;
+      // cached active/trialing status is not evidence that this old ID exists.
+      let customer;
+      try { customer = await stripe.customers.retrieve(existing.stripe_customer_id); }
+      catch (customerError) {
+        if (customerError.code === 'resource_missing') throw paymentError('The saved Stripe customer could not be verified.');
+        throw customerError;
+      }
+      assertStripeMode(customer, testOnly);
+      const user = (await database.query('SELECT user_id, email FROM users WHERE user_id = $1', [userId])).rows[0];
+      const email = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
+      const tags = customer.metadata || {};
+      if (customer.deleted || customer.id !== existing.stripe_customer_id || !email(user?.email) ||
+          email(customer.email) !== email(user.email) ||
+          (tags.app && tags.app !== 'homework-help-ai') ||
+          (tags.deployment_id && tags.deployment_id !== deploymentId) ||
+          (tags.user_id && tags.user_id !== String(userId))) {
+        throw paymentError('The saved Stripe customer ownership could not be verified.');
+      }
+    }
+    if (old) {
+      assertStripeMode(old, testOnly);
+      if (!belongsToStripeDeployment(old, deploymentId)) {
+        throw paymentError('This subscription belongs to another deployment or predates deployment isolation.');
+      }
+      if (stripeId(old.customer) !== values[0] || old.metadata?.user_id !== String(userId)) {
+        throw paymentError('Subscription ownership could not be verified.');
+      }
+      // Stripe's current object determines replacement eligibility, even when
+      // the local projection still says active after a delayed/missed webhook.
+      if (old.created >= subscription.created || hasSubscriptionAccess(old.status)) return;
+    }
+    replaceSubscriptionId = existing.stripe_subscription_id;
   }
   await database.query(`INSERT INTO subscriptions (user_id, stripe_customer_id, stripe_subscription_id,
     stripe_price_id, subscription_status, current_period_end, cancel_at_period_end)
@@ -62,7 +100,7 @@ async function reconcileStripeEventOnce(event, { stripe, database, testOnly = tr
       updated_at = NOW()
     WHERE subscriptions.stripe_subscription_id = EXCLUDED.stripe_subscription_id
        OR (subscriptions.stripe_customer_id = EXCLUDED.stripe_customer_id
-           AND subscriptions.subscription_status NOT IN ('active', 'trialing'))`, [userId, ...values]);
+           AND subscriptions.stripe_subscription_id = $8)`, [userId, ...values, replaceSubscriptionId]);
 }
 
 export function createWebhookRouter({ database = db, getStripe = getStripeClient,
