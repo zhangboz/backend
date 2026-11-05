@@ -6,6 +6,7 @@ import jwt from 'jsonwebtoken';
 import { imageUnderstand, handWrittenToMarkdown, supportedMimeTypes } from '../AI_ChatBot/OpenAI_Agent.mjs';
 import { AIError, safeAIError } from '../AI_ChatBot/openaiClient.mjs';
 import { limitAI } from '../middleware/aiLimits.mjs';
+import { conceptStore } from '../services/conceptSessions.mjs';
 
 function identity(req) {
   const token = req.headers.authorization?.match(/^Bearer (\S+)$/i)?.[1];
@@ -20,7 +21,7 @@ function identity(req) {
   throw new AIError('A valid login or anonymous identity is required.', 400, 'MISSING_IDENTITY');
 }
 
-export default function createProcessHomeworkRouter(uploadDir, service = { imageUnderstand, handWrittenToMarkdown }) {
+export default function createProcessHomeworkRouter(uploadDir, service = { imageUnderstand, handWrittenToMarkdown }, contextStore = conceptStore) {
   const router = express.Router();
   const upload = multer({
     storage: multer.diskStorage({ destination: uploadDir, filename: (_req, _file, cb) => cb(null, randomUUID()) }),
@@ -43,8 +44,11 @@ export default function createProcessHomeworkRouter(uploadDir, service = { image
         ? await service.handWrittenToMarkdown(req.file.path, req.file.mimetype, userId, { signal: controller.signal })
         : await service.imageUnderstand(req.file.path, req.file.mimetype, userId, language, { signal: controller.signal });
       if (!controller.signal.aborted && !res.destroyed) {
+        const explanationContextId = !handwritten && result.explanationContext
+          ? contextStore.registerResult({ ...result.explanationContext, owner: userId }) : null;
         res.json({ success: true, reply1: result.text1,
           ...(!handwritten ? { reply2: result.text2 ?? null } : {}),
+          ...(explanationContextId ? { explanationContextId } : {}),
           ...(result.warning ? { warning: result.warning } : {}),
         });
       }

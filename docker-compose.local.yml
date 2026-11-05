@@ -1,3 +1,4 @@
+# RETIRED: preserved for the previous local Redis volume; active OpenAI runtime does not use it.
 name: homework-help-local
 services:
   redis:

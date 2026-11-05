@@ -1,3 +1,4 @@
+# RETIRED: preserved for the previous local Redis volume; active OpenAI runtime does not use it.
 # Compatibility entry point: local Redis only; never creates a database.
 include:
   - docker-compose.local.yml

@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { EventEmitter } from 'node:events';
 import express from 'express';
 import passport from 'passport';
 import { loadLocalEnvironment, trustProxyHops, exportConcurrency } from '../services/runtimeConfig.mjs';
@@ -11,14 +10,25 @@ import { createOAuthSession, OAUTH_SESSION_PATH } from '../services/oauthSession
 
 const production = { NODE_ENV: 'production', JWT_SECRET: 'synthetic-production-secret-for-tests-only', TRUST_PROXY_HOPS: '1' };
 
-class TestRedis extends EventEmitter {
-  constructor(data = new Map()) { super(); this.data = data; this.isOpen = true; this.isReady = true; this.now = Date.now(); }
-  async get(key) { const item = this.data.get(key); return item && item.expires > this.now ? item.value : null; }
-  async set(key, value, options) { this.data.set(key, { value, expires: this.now + options.expiration.value * 1000 }); }
-  async expire(key, ttl) { const item = this.data.get(key); if (item) item.expires = this.now + ttl * 1000; }
-  async del(keys) { for (const key of keys) this.data.delete(key); }
-  async ping() { return 'PONG'; }
-  destroy() { this.isOpen = false; this.isReady = false; }
+class TestSessionDatabase {
+  constructor(data = new Map()) { this.data = data; this.now = Date.now(); }
+  async query(sql, values = []) {
+    if (sql.startsWith('SELECT sess')) {
+      const value = this.data.get(values[0]);
+      return { rows: value && value.expires > +values[1] ? [{ sess: structuredClone(value.sess) }] : [] };
+    }
+    if (sql.startsWith('INSERT INTO oauth_sessions')) {
+      this.data.set(values[0], { sess: JSON.parse(values[1]), expires: +values[2] });
+    } else if (sql.startsWith('UPDATE oauth_sessions')) {
+      const value = this.data.get(values[0]);
+      if (value && value.expires > +values[2]) value.expires = +values[1];
+    } else if (sql.startsWith('DELETE FROM oauth_sessions WHERE sid')) {
+      this.data.delete(values[0]);
+    } else if (sql.startsWith('DELETE FROM oauth_sessions WHERE expires_at')) {
+      for (const [key, value] of this.data) if (value.expires <= +values[0]) this.data.delete(key);
+    }
+    return { rows: [] };
+  }
 }
 
 async function serve(t, app) {
@@ -30,7 +40,7 @@ async function serve(t, app) {
 }
 
 function sessionApp(t, client) {
-  const manager = createOAuthSession({ environment: production, redisClient: client });
+  const manager = createOAuthSession({ environment: production, database: client, now: () => client.now });
   t.after(() => manager.close());
   const app = express();
   app.set('trust proxy', trustProxyHops(production));
@@ -78,7 +88,7 @@ test('proxy setting preserves client IP and HTTPS only with the configured singl
 
 test('production OAuth sessions survive a new API instance and expire after ten minutes', async t => {
   const shared = new Map();
-  const first = sessionApp(t, new TestRedis(shared));
+  const first = sessionApp(t, new TestSessionDatabase(shared));
   const firstBase = await serve(t, first.app);
   const response = await fetch(firstBase + OAUTH_SESSION_PATH + '/set', { headers: { 'X-Forwarded-Proto': 'https' } });
   const header = response.headers.get('set-cookie');
@@ -88,7 +98,7 @@ test('production OAuth sessions survive a new API instance and expire after ten 
   assert.match(header, /Path=\/api\/login\/auth\/google/);
   const cookie = header.split(';')[0];
   await first.manager.close();
-  const client = new TestRedis(shared);
+  const client = new TestSessionDatabase(shared);
   const second = sessionApp(t, client);
   const secondBase = await serve(t, second.app);
   const read = () => fetch(secondBase + OAUTH_SESSION_PATH + '/read', { headers: { cookie, 'X-Forwarded-Proto': 'https' } });
@@ -99,11 +109,11 @@ test('production OAuth sessions survive a new API instance and expire after ten 
 });
 
 test('production does not send its OAuth session cookie over plain HTTP', async t => {
-  const { app } = sessionApp(t, new TestRedis());
+  const { app } = sessionApp(t, new TestSessionDatabase());
   const base = await serve(t, app);
   const response = await fetch(base + OAUTH_SESSION_PATH + '/set');
   assert.equal(response.headers.get('set-cookie'), null);
-  assert.throws(() => createOAuthSession({ environment: production }), /REDIS_URL/);
+  assert.throws(() => createOAuthSession({ environment: production }), /DATABASE_URL/);
 });
 
 test('actual Google route rejects forged or replayed OAuth state before any upstream token request', async t => {
@@ -120,7 +130,7 @@ test('actual Google route rejects forged or replayed OAuth state before any upst
   const original = strategy._oauth2.getOAuthAccessToken;
   strategy._oauth2.getOAuthAccessToken = (_code, _params, cb) => { tokenCalls++; cb(new Error('Synthetic upstream stop')); };
   t.after(() => { strategy._oauth2.getOAuthAccessToken = original; });
-  const { app } = sessionApp(t, new TestRedis());
+  const { app } = sessionApp(t, new TestSessionDatabase());
   app.use(passport.initialize());
   app.use('/api/login', router);
   app.use((_error, _req, res, _next) => res.status(500).json({ synthetic: true }));

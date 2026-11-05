@@ -6,8 +6,13 @@ const { Pool } = pg;
 let dbConfig;
 
 if (process.env.DATABASE_URL) {
+  const connection = new URL(process.env.DATABASE_URL);
+  if (process.env.DB_SSL === 'true') {
+    // pg connection-string SSL flags otherwise override certificate validation.
+    for (const key of ['sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'uselibpqcompat']) connection.searchParams.delete(key);
+  }
   dbConfig = {
-    connectionString: process.env.DATABASE_URL,
+    connectionString: connection.toString(),
     ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: true } : false,
     connectionTimeoutMillis: 5000,
     statement_timeout: 15000,
@@ -26,7 +31,7 @@ if (process.env.DATABASE_URL) {
   console.log(`[DB] Connecting to local database: ${process.env.DB_NAME}`);
 }
 
-const pool = new Pool(dbConfig);
+const pool = new Pool({ ...dbConfig, max: 5, idleTimeoutMillis: 10000, allowExitOnIdle: true });
 
 pool.on('connect', () => {
   console.log('[DB] Database pool connected.');

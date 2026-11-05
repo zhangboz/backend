@@ -30,7 +30,7 @@ export function createSpeechService({
   timeoutMs = positiveInteger(process.env.OPENAI_SPEECH_TIMEOUT_MS, 120_000),
   cacheTtlMs = 60 * 60 * 1000,
   maxCacheEntries = 16,
-  maxCacheBytes = 64 * 1024 * 1024,
+  maxCacheBytes = 16 * 1024 * 1024,
   maxAudioBytes = 24 * 1024 * 1024,
 } = {}) {
   const cache = new Map();

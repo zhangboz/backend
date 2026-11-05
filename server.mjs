@@ -11,6 +11,8 @@ import { trustProxyHops } from './services/runtimeConfig.mjs';
 import { requireAuth, requireSubscription, requireAdmin } from './middleware/auth.mjs';
 import loginRouter from './routes/loginRouter.mjs';
 import createProcessHomeworkRouter from './routes/processHomeworkRouter.mjs';
+import createConceptExplanationRouter from './routes/conceptExplanationRouter.mjs';
+import { conceptStore } from './services/conceptSessions.mjs';
 import exportRouter, { downloadRouter } from './routes/exportRouter.mjs';
 import speechRouter from './routes/speechRouter.mjs';
 import webhookRouter from './routes/webhookRouter.mjs';
@@ -18,7 +20,7 @@ import paymentRouter from './routes/paymentRouter.mjs';
 import userStatusRouter from './routes/userStatusRouter.mjs';
 import adminRouter from './routes/adminRouter.mjs';
 import db from './db.mjs';
-import { getExportQueue, closeExportQueue } from './FileProcessor/queue.mjs';
+import { openaiExports } from './services/openaiExports.mjs';
 
 const uploadDir = fileURLToPath(new URL('./uploads', import.meta.url));
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -38,23 +40,24 @@ app.use(express.urlencoded({ extended: false, limit: '2mb' }));
 const oauthSession = createOAuthSession();
 app.use(OAUTH_SESSION_PATH, oauthSession.middleware);
 app.use(passport.initialize());
-app.get('/api/health', async (_req, res) => {
+// Render's recurring liveness checks must not keep Neon's compute awake.
+app.get('/api/health', (_req, res) => res.json({ healthy: true, exportProvider: 'openai' }));
+// Readiness is for deployment/manual diagnostics, not a recurring uptime probe.
+app.get('/api/ready', async (_req, res) => {
   const checks = await Promise.allSettled([
-    bounded(db.query('SELECT 1')),
-    bounded(getExportQueue().then(async queue => (await queue.client).ping())),
-    bounded(getExportQueue().then(queue => queue.getWorkers())),
-    bounded(oauthSession.healthy()),
+    bounded(db.query('SELECT 1 FROM users LIMIT 0')),
+    bounded(db.query('SELECT 1 FROM export_jobs LIMIT 0')),
+    bounded(db.query('SELECT 1 FROM oauth_sessions LIMIT 0')),
   ]);
-  const dependencies = {
-    database: checks[0].status === 'fulfilled', redis: checks[1].status === 'fulfilled',
-    exportWorker: checks[2].status === 'fulfilled' && checks[2].value.length > 0,
-    sessionStore: checks[3].status === 'fulfilled' && checks[3].value === true,
-  };
-  const healthy = Object.values(dependencies).every(Boolean);
-  res.status(healthy ? 200 : 503).json({ healthy, dependencies });
+  const healthy = checks.every(check => check.status === 'fulfilled');
+  res.status(healthy ? 200 : 503).json({ healthy, dependencies: {
+    database: checks[0].status === 'fulfilled', exports: checks[1].status === 'fulfilled',
+    sessions: checks[2].status === 'fulfilled',
+  } });
 });
 app.use('/api/login', loginRouter);
 app.use('/api/process-homework', createProcessHomeworkRouter(uploadDir));
+app.use('/api/concept-explanations', createConceptExplanationRouter());
 app.all('/api/gcs-webhook', (_req, res) => res.status(410).json({ message: 'Textbook cloud processing is paused.' }));
 app.use('/api/export/download', downloadRouter);
 app.use('/api/payment', requireAuth, paymentRouter);
@@ -75,14 +78,16 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is required in backend/.env.');
   const host = process.env.HOST || '127.0.0.1';
   const port = Number(process.env.PORT || 5000);
+  void openaiExports.cleanup({ force: true });
   const server = app.listen(port, host, () => console.log(`Backend listening at http://${host}:${port}`));
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, async () => {
+    conceptStore.clear();
     await new Promise(resolve => {
       const timer = setTimeout(() => { server.closeAllConnections(); resolve(); }, 10000);
       server.close(() => { clearTimeout(timer); resolve(); });
       server.closeIdleConnections();
     });
-    await Promise.allSettled([db.end(), closeExportQueue(), oauthSession.close()]);
+    await Promise.allSettled([db.end(), oauthSession.close()]);
     process.exit(0);
   });
 }

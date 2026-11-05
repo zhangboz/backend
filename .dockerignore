@@ -1,29 +1,25 @@
-# .dockerignore
-
-# Git files
-.git
-.gitignore
-
-# Node modules are installed by the RUN npm ci command inside the container
-node_modules
-
-# Local environment variables
-.env
-.env.*
-
-# Logs and temporary files
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-*.env
-**/*.env
-secrets
-**/*key*.json
-migrations
-backups
-.local
-uploads
-temp_exports
-AI_ChatBot/backup
-AI_ChatBot/*.pdf
-FileProcessor/temp_cloud_deploy
+# Deployment context allowlist: never send env files, keys, homework or backups.
+*
+!package.json
+!package-lock.json
+!server.mjs
+!config.mjs
+!db.mjs
+!AI_ChatBot/
+AI_ChatBot/*
+!AI_ChatBot/*.mjs
+!services/
+services/*
+!services/*.mjs
+!middleware/
+middleware/*
+!middleware/*.mjs
+!routes/
+routes/*
+!routes/*.mjs
+!scripts/
+scripts/*
+!scripts/migrate-cloud.mjs
+!migrations/
+migrations/*
+!migrations/20261104_cloud_runtime.sql

@@ -62,13 +62,15 @@ export function createHomeworkService({ client, read = readFile, logger = consol
     try {
       const instructions = explanationPrompts[language].replace('{image_answer}', () => answer.text);
       const explanation = await call('explanation', instructions, 'Explain the supplied homework answer.', 'low', userId, signal);
-      return { text1: answer.text, text2: explanation.text };
+      return { text1: answer.text, text2: explanation.text,
+        explanationContext: { source: content, answer: answer.text, language } };
     } catch (error) {
       const safe = safeAIError(error);
       if (signal?.aborted) throw safe;
       logger.warn?.('[AI explanation unavailable]', safe.code);
       return {
         text1: answer.text, text2: null,
+        explanationContext: { source: content, answer: answer.text, language },
         warning: language === 'zh' ? '答案已生成，但语音讲解暂不可用。' : 'Your answer is ready, but the spoken explanation is temporarily unavailable.',
       };
     }

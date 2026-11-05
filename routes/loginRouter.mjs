@@ -4,9 +4,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
-import crypto from 'crypto'; // <-- IMPORT CRYPTO
 import db from '../db.mjs';
-import { sendConfirmationEmail } from '../services/emailService.mjs'; // <-- IMPORT EMAIL SERVICE
+import { createRegistrationService } from '../services/registrationService.mjs';
 
 const router = express.Router();
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -74,58 +73,11 @@ passport.deserializeUser(async (id, done) => {
 
 // ===== ROUTES =====
 // --- 1. User Registration (Email/Password) ---
+const registration = createRegistrationService({ database: db });
 router.post('/register', async (req, res, next) => {
-  const { email, password } = req.body;
-  
-  if (!email || !password) {
-    return res.status(400).json({ message: 'Email and password are required.' });
-  }
-  if (password.length < 8) {
-      return res.status(400).json({ message: 'Password must be at least 8 characters long.' });
-  }
-
   try {
-    const existingUserResult = await db.query('SELECT * FROM users WHERE email = $1', [email]);
-    
-    // --- MODIFIED LOGIC FOR EXISTING USERS ---
-    if (existingUserResult.rows.length > 0) {
-      const existingUser = existingUserResult.rows[0];
-
-      if (existingUser.is_email_confirmed) {
-        // User is fully registered and confirmed.
-        return res.status(409).json({ message: 'A user with this email already exists.' });
-      } else {
-        // User exists but is not confirmed.
-        const tokenExpires = new Date(existingUser.email_confirmation_expires);
-        if (tokenExpires > new Date()) {
-          // Token is still valid, tell them to check their email.
-          return res.status(409).json({ message: 'This email is pending confirmation. Please check your inbox for the activation link.' });
-        } else {
-          // Token has expired. Delete the stale record so they can re-register.
-          await db.query('DELETE FROM users WHERE user_id = $1', [existingUser.user_id]);
-          console.log(`[Register] Deleted stale, unconfirmed user record for ${email}`);
-        }
-      }
-    }
-    // --- END OF MODIFIED LOGIC ---
-
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-    
-    const confirmationToken = crypto.randomBytes(32).toString('hex');
-    const confirmationExpires = new Date(Date.now() + 3600000); // 1 hour
-
-    await db.query(
-      `INSERT INTO users (email, password, email_confirmation_token, email_confirmation_expires) 
-       VALUES ($1, $2, $3, $4)`,
-      [email, hashedPassword, confirmationToken, confirmationExpires]
-    );
-
-    await sendConfirmationEmail(email, confirmationToken, FRONTEND_URL);
-
-    res.status(201).json({
-      message: 'Registration successful! Please check your email to activate your account.',
-    });
+    const result = await registration.register(req.body);
+    res.status(result.status).json({ message: result.message });
   } catch (error) {
     next(error);
   }
