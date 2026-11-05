@@ -4,7 +4,7 @@ Express API for homework help, handwriting transcription, speech, authentication
 
 ## Status — 2026-11-04
 
-The current cloud target is **a new Render Free Node API with Neon Free PostgreSQL**. The parent [render.yaml](https://github.com/zhangboz/homework-help-ai/blob/main/render.yaml) and [deployment guide](https://github.com/zhangboz/homework-help-ai/blob/main/deploy/render/README.md) describe the prepared configuration. No cloud resources have been created or deployed and no DNS cutover has occurred. The retired Render system remains archived and inactive.
+The new **Render Free Node API with Neon Free PostgreSQL** is deployed for testing. The [API health endpoint](https://synapse-openai-api.onrender.com/api/health) and [React website](https://synapse-openai-web.onrender.com) are live. The parent [render.yaml](https://github.com/zhangboz/homework-help-ai/blob/codex/render-neon-free/render.yaml) and [deployment guide](https://github.com/zhangboz/homework-help-ai/blob/codex/render-neon-free/deploy/render/README.md) record the configuration and remaining browser/email acceptance. All seven database tables restored with matching data fingerprints; local data remains intact. The custom website domain has not been switched. The retired Render system remains archived and inactive.
 
 Oracle is paused after Phoenix Always Free `OUT_OF_HOST_CAPACITY` results; no VM was created. Gemini, Vertex and Google ADK are retired from runtime, with original prompts retained in `AI_ChatBot/prompts.mjs`. GCS textbook storage/transcription remains paused. Local data and the separate WeChat frontend are preserved.
 
@@ -58,7 +58,7 @@ Local `.env` loads before `.env.local`; production/tests use supplied environmen
 
 Status access checks ownership. Downloads require valid signatures and expiry. Expired file bytes are removed lazily at startup or on later user activity; there is no periodic database polling worker. Safe errors do not disclose uploaded content or provider diagnostics. An expired or failed export leaves the homework answer intact.
 
-The bilingual prototype preserved Chinese, code, tables and math without Pandoc. Word equations currently use images rather than editable native math. Model formatting still needs quality checks for long documents and uncommon notation; this is not a deterministic conversion endpoint. OpenAI maintains the execution environment, while this API owns authorization, persistence, bounds and cleanup.
+Actual cloud bilingual samples preserved Chinese, code, tables and math without Pandoc. The Word sample contained three native equations; other runs may use equation images. Model formatting still needs quality checks for long documents and uncommon notation; this is not a deterministic conversion endpoint. OpenAI maintains the execution environment, while this API owns authorization, persistence, bounds and cleanup.
 
 ## Login, mail and health
 
@@ -82,7 +82,7 @@ Media/answers remain in bounded single-process memory for 30 minutes (64 MB / 64
 
 Run `npm test` for offline tests. Current backend checks pass, including export restart recovery, ownership, duplicate dispatch prevention, bounds and provider cleanup. Native Windows smoke checks used Node 23; deployment targets Node 24. Explicit `--live` smoke scripts make paid API calls or Stripe TEST fixtures and write only synthetic reports under ignored `.local/`.
 
-The earlier restoration validated owner-confirmed email/Google login and Stripe TEST flows; the recorded 36 original users and 28 subscriptions were historical before/after checks, not a current cloud audit. New cloud database restore, email delivery, OAuth and Stripe acceptance remain pending. See the parent deployment guide rather than retired Oracle/Pandoc instructions.
+The earlier restoration validated owner-confirmed local email/Google login. The cloud migration verified all seven tables, including the current source's 38 users and 30 subscriptions, and preserved local data. Cloud API tests passed login, image homework, speech, PDF/DOCX and Stripe TEST trial/cancellation/restoration; the owner also confirmed Google browser login. Hosted Checkout and real email confirmation are tracked separately in the parent deployment guide.
 
 Active Git history was sanitized on 2026-11-04. The [original backend repository](https://github.com/zhangboz/backend-private-archive-20261104) remains a private read-only archive. Re-clone if your checkout predates cleanup; never push old branches, local backups, dumps, credential exports or user documents. History cleanup does not revoke previously exposed credentials. Local private data remains preserved.
 
@@ -93,4 +93,4 @@ Active Git history was sanitized on 2026-11-04. The [original backend repository
 - Actual HTTP exports produced PDF and DOCX from synthetic bilingual Markdown. Duplicate creation reused one job; PDF completed after an API restart, and signed download tampering was rejected. Generation is model-driven; Word equations may be images rather than native editable math.
 - The Render Blueprint passed the official schema check and declares only a Free API plus a static site. The production Docker context is an allowlist; it excludes local data, environment files, keys, backups and retired converters.
 - Gitleaks and exact current-secret comparison found no leaks in the candidate source. Secrets and test artifacts remain local and ignored.
-- Candidate branch: `codex/render-neon-free`. Cloud resources, Neon data restoration, Resend verification and cloud OAuth/Stripe acceptance remain pending. This does not redeploy the archived Render services or change DNS.
+- Deployed branch: `codex/render-neon-free`, with automatic deployment off. Cloud restoration and API-level acceptance passed; all 114 backend tests passed after adding Stripe deployment isolation. Sender-domain verification and owner browser acceptance remain in progress. This does not reactivate the archived Render services or switch the website's custom domain.
