@@ -2,9 +2,9 @@
 
 Express API for homework help, handwriting transcription, speech, authentication, Stripe TEST subscriptions and model-generated PDF/DOCX exports. This component belongs to the [private parent project](https://github.com/zhangboz/homework-help-ai); it also runs independently.
 
-## Status — 2026-11-04
+## 已上线 / Live — 2026-11-04
 
-The new **Render Free Node API with Neon Free PostgreSQL** is deployed for testing. The [API health endpoint](https://synapse-openai-api.onrender.com/api/health) and [React website](https://synapse-openai-web.onrender.com) are live. The parent [render.yaml](https://github.com/zhangboz/homework-help-ai/blob/codex/render-neon-free/render.yaml) and [deployment guide](https://github.com/zhangboz/homework-help-ai/blob/codex/render-neon-free/deploy/render/README.md) record the configuration and remaining browser/email acceptance. All seven database tables restored with matching data fingerprints; local data remains intact. The custom website domain has not been switched. The retired Render system remains archived and inactive.
+The **Render Free Node API with Neon Free PostgreSQL** is live. Open the [React website](https://synapse-openai-web.onrender.com) or check the [API health endpoint](https://synapse-openai-api.onrender.com/api/health). Google login, email registration/confirmation/login, cloud homework, speech and PDF/DOCX have passed acceptance. The parent [render.yaml](https://github.com/zhangboz/homework-help-ai/blob/codex/render-neon-free/render.yaml) and [deployment guide](https://github.com/zhangboz/homework-help-ai/blob/codex/render-neon-free/deploy/render/README.md) record the configuration and completed checks. All seven database tables restored with matching data fingerprints; local data remains intact. Billing remains in Stripe TEST mode, Hosted Checkout browser acceptance is outstanding, and the custom website domain has not been switched. The old Render backend and workers remain suspended with archived deployment configuration; the old static site is retained until domain cutover.
 
 Oracle is paused after Phoenix Always Free `OUT_OF_HOST_CAPACITY` results; no VM was created. Gemini, Vertex and Google ADK are retired from runtime, with original prompts retained in `AI_ChatBot/prompts.mjs`. GCS textbook storage/transcription remains paused. Local data and the separate WeChat frontend are preserved.
 
@@ -16,7 +16,7 @@ Oracle is paused after Phoenix Always Free `OUT_OF_HOST_CAPACITY` results; no VM
 | Explanation and handwriting transcription | `gpt-6.1-terra`, low reasoning; two-step answer/explanation, single-step transcription |
 | Document exports | `gpt-6.1-terra` + hosted Code Interpreter, low reasoning |
 | Speech | `gpt-realtime-2.1-mini` WebSocket PCM → WAV; default `marin` |
-| Selected concepts | Existing `gpt-6-luna` working-tree feature |
+| Selected concepts | Included `gpt-6-luna` feature |
 | Durable state | PostgreSQL, including export jobs/files and ten-minute production OAuth state |
 | Email | Resend HTTPS in production; SMTP locally |
 | Payments | Stripe TEST; seven-day trial, valid `active` or `trialing` access |
@@ -74,7 +74,7 @@ Keep `STRIPE_DEPLOYMENT_ID=local` for the local database and use `synapse-render
 
 ## Preserved concept feature
 
-The existing concept-explanation changes are preserved in this working tree. `POST /api/concept-explanations/start` binds a selected passage to its original result and browser channel; one follow-up is allowed. A third submission returns the fixed limit message without a model call. Refused selections stop after a tool-free check; eligible explanations use bounded web research and source annotations. Markdown context export includes the original question media, answer, selection and conversation.
+The selected-concept feature is included in this release. `POST /api/concept-explanations/start` binds a selected passage to its original result and browser channel; one follow-up is allowed. A third submission returns the fixed limit message without a model call. Refused selections stop after a tool-free check; eligible explanations use bounded web research and source annotations. Markdown context export includes the original question media, answer, selection and conversation.
 
 Media/answers remain in bounded single-process memory for 30 minutes (64 MB / 64 contexts, eight channels per result), with idle cleanup. Concept messages are not persisted to SQL/disk and use OpenAI `store: false`. Replacing a selection or closing the panel deletes its messages and cancels in-flight work; late responses cannot restore them. Restart/expiry/eviction requires regenerating the result. Keep one API process until an equivalent shared store is implemented.
 
@@ -86,7 +86,7 @@ The earlier restoration validated owner-confirmed local email/Google login. The 
 
 Active Git history was sanitized on 2026-11-04. The [original backend repository](https://github.com/zhangboz/backend-private-archive-20261104) remains a private read-only archive. Re-clone if your checkout predates cleanup; never push old branches, local backups, dumps, credential exports or user documents. History cleanup does not revoke previously exposed credentials. Local private data remains preserved.
 
-## Render/Neon candidate verification — 2026-11-04
+## Live release verification — 2026-11-04
 
 - All 108 backend tests passed in the isolated Node 24 Linux production image; all 31 React tests and the production frontend build passed.
 - Eleven real local PostgreSQL checks passed, including concurrent quotas, idempotency, poll leases, session expiry and cleanup. Existing 38 users and 30 subscriptions had identical before/after fingerprints; the temporary test schema was removed.
